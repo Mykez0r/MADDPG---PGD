@@ -1,0 +1,46 @@
+# Core ML/DL dependencies
+torch==2.2.2
+torchvision==0.17.2
+torchaudio==2.2.2
+torch-geometric==2.5.2
+
+# Scientific computing
+numpy==1.26.4
+scipy==1.13.0
+pandas==2.2.2
+networkx==3.3
+
+# Visualization
+matplotlib==3.8.4
+seaborn==0.13.2
+plotly==5.22.0
+
+# Experiment tracking & monitoring
+tensorboard==2.16.2
+wandb==0.17.0
+tqdm==4.66.4
+
+# Development tools
+jupyter==1.0.0
+jupyterlab==4.2.1
+ipython==8.24.0
+
+# System monitoring
+psutil==5.9.8
+GPUtil==1.4.0
+
+# Data handling
+h5py==3.11.0
+
+# Configuration management
+pyyaml==6.0.1
+configargparse==1.7
+
+# Statistical analysis
+scikit-learn==1.5.0
+statsmodels==0.14.2
+
+# Utilities
+click==8.1.7
+rich==13.7.1
+colorama==0.4.6

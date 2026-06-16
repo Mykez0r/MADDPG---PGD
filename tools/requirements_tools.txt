@@ -1,0 +1,9 @@
+# tools/requirements_tools.txt
+# Lightweight dependencies for local figure generation (no Docker needed)
+#
+# Install with:
+#   pip install -r tools/requirements_tools.txt
+#
+numpy>=1.24.0
+matplotlib>=3.7.0
+networkx>=3.0
