@@ -57,7 +57,7 @@ class PGDAttackFramework:
     ):
         """
         Args:
-            epsilon:      L-inf ball radius – maximum total perturbation per feature.
+            epsilon:      L-inf ball radius â€“ maximum total perturbation per feature.
             alpha:        Step size for each PGD iteration.  A common heuristic is
                           alpha = epsilon / (num_steps / 4), but it can be set freely.
             num_steps:    Number of gradient-ascent steps (K in the PGD paper).
@@ -183,7 +183,7 @@ class PGDAttackFramework:
 
                     if x_adv.grad is None:
                         logger.warning(
-                            'PGD step: gradient is None for agent %d – skipping remaining steps.',
+                            'PGD step: gradient is None for agent %d â€“ skipping remaining steps.',
                             agent_index,
                         )
                         break
@@ -230,7 +230,7 @@ class PGDAttackFramework:
             # Return zero loss still connected to the graph to avoid grad errors
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
 
-        num_actions      = action_probs.shape[-1]   # n_dest × K_PATHS (e.g. 63 = 21 × 3)
+        num_actions      = action_probs.shape[-1]   # n_dest Ã— K_PATHS (e.g. 63 = 21 Ã— 3)
         bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
 
         # Action i is associated with the link to neighbor (i % num_neighbors).
@@ -264,7 +264,7 @@ class PGDAttackFramework:
         neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
         per_action_bw    = bandwidth_states[:, neighbor_indices]
 
-        # Negate expected bandwidth so gradient ascent minimises it —
+        # Negate expected bandwidth so gradient ascent minimises it â€”
         # this deceives the agent into believing low-BW (bad) paths are attractive.
         expected_bw = torch.sum(action_probs * per_action_bw)
         return -expected_bw   # gradient pushes agent toward low-bandwidth (bad) paths
@@ -278,8 +278,8 @@ class PGDAttackFramework:
     ) -> torch.Tensor:
         """Targeted misrouting: cross-entropy toward the most-congested (worst) action.
 
-        Unlike entropy maximisation — which can inadvertently produce load-balancing and
-        improve performance — this forces the agent to assign maximum probability to the
+        Unlike entropy maximisation â€” which can inadvertently produce load-balancing and
+        improve performance â€” this forces the agent to assign maximum probability to the
         single action that routes traffic through the most congested link.
         """
         num_neighbors = network_engine.get_number_neighbors(
@@ -468,7 +468,7 @@ class MADDPGRobustnessEvaluator:
         all_hosts = self.network_engine.get_all_hosts()
         n_actions = self.network_engine.n_actions   # adapts to per-destination action space
 
-        # Convert actions → arrays for NetworkEngine.step().
+        # Convert actions â†’ arrays for NetworkEngine.step().
         # choose_action() already returns np.ndarray probability vectors; integer
         # indices (legacy callers) are converted to one-hot.
         action_arrays = []
@@ -594,7 +594,7 @@ class ThesisVisualizationSuite:
             (ax1, 'Reward Degradation (%)',   'PGD Reward Degradation vs Attack Intensity'),
             (ax2, 'Packet Loss Increase (%)', 'PGD Packet Loss Increase vs Attack Intensity'),
         ]:
-            ax.set_xlabel('Attack Intensity (ε)')
+            ax.set_xlabel('Attack Intensity (Îµ)')
             ax.set_ylabel(ylabel)
             ax.set_title(title)
             ax.legend()
@@ -629,7 +629,7 @@ class ThesisVisualizationSuite:
                 ax.text(j, i, f'{heatmap_data[i][j]:.1f}',
                         ha='center', va='center', color='white', fontweight='bold')
 
-        ax.set_xlabel('Attack Intensity (ε)')
+        ax.set_xlabel('Attack Intensity (Îµ)')
         ax.set_ylabel('MADDPG Variant')
         ax.set_title('PGD Robustness Score Heatmap')
         plt.tight_layout()
@@ -657,7 +657,7 @@ class ThesisVisualizationSuite:
                 ]
                 ax.bar(x + i * width, values, width, label=variant, alpha=0.8)
 
-            ax.set_xlabel('Attack Intensity (ε)')
+            ax.set_xlabel('Attack Intensity (Îµ)')
             ax.set_ylabel(metric_name)
             ax.set_title(f'{metric_name} by Variant')
             ax.set_xticks(x + width * (len(variants) - 1) / 2)
@@ -738,7 +738,7 @@ class ThesisVisualizationSuite:
             (ax1, 'Robustness Score',        'GNN vs Non-GNN Robustness (PGD)'),
             (ax2, 'Attack Success Rate (%)', 'Attack Success Rate: GNN vs Non-GNN (PGD)'),
         ]:
-            ax.set_xlabel('Attack Intensity (ε)')
+            ax.set_xlabel('Attack Intensity (Îµ)')
             ax.set_ylabel(ylabel)
             ax.set_title(title)
             ax.legend()
@@ -765,7 +765,7 @@ class ThesisVisualizationSuite:
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
                         f'{rate:.1f}%', ha='center', va='bottom', fontsize=9)
 
-        ax.set_xlabel('Attack Intensity (ε)')
+        ax.set_xlabel('Attack Intensity (Îµ)')
         ax.set_ylabel('Attack Success Rate (%)')
         ax.set_title('PGD Attack Success Rate Across MADDPG Variants')
         ax.set_xticks(x + width * (len(variants) - 1) / 2)
