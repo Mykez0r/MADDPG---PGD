@@ -382,10 +382,12 @@ class NetworkTopology:
                 self.path_cache[(src, dst)] = []
         self.kpath_cache.clear()
         for src in self.hosts:
+            _src_degree = self.graph.degree(src)
+            _dedup_idx = 2 if _src_degree == 1 else 1
             for dst in self.access_nodes:
                 if src != dst:
                     self.kpath_cache[(src, dst)] = self._build_distinct_kpaths(
-                        self.graph, src, dst, K_PATHS
+                        self.graph, src, dst, K_PATHS, dedup_hop_idx=_dedup_idx
                     )
 
     # ── edge helpers ─────────────────────────────────────────────────────────
@@ -507,6 +509,11 @@ class NetworkEngine:
         self._flow_seq = 0
         if self.traffic_mode == 'flow':
             self.topology.configure_flow_reservations(self.flow_hold_steps)
+        # Skewed traffic matrix: concentrate a fraction of flows on hot src→dst pairs
+        _skew = traffic_cfg.get('skew', {})
+        self._skew_weight: float = float(_skew.get('weight', 0.0))
+        self._skew_hot_srcs: List[str] = list(_skew.get('hot_srcs', []))
+        self._skew_hot_dsts: List[str] = list(_skew.get('hot_dsts', []))
         base_reward = {
             'delivery_weight': ALPHA,
             'max_util_penalty': BETA,
@@ -1431,9 +1438,19 @@ class NetworkEngine:
         # routers originate customer traffic and P routers only transit.
         srcs = self.topology.access_nodes
         dsts = self.topology.access_nodes
+        hot_srcs = [h for h in self._skew_hot_srcs if h in set(srcs)]
+        hot_dsts = [h for h in self._skew_hot_dsts if h in set(dsts)]
+        use_skew = self._skew_weight > 0.0 and hot_srcs and hot_dsts
         for _ in range(n):
-            src = random.choice(srcs)
-            dst = random.choice([h for h in dsts if h != src])
+            if use_skew and random.random() < self._skew_weight:
+                src = random.choice(hot_srcs)
+                dst_choices = [h for h in hot_dsts if h != src]
+                if not dst_choices:
+                    dst_choices = [h for h in dsts if h != src]
+                dst = random.choice(dst_choices)
+            else:
+                src = random.choice(srcs)
+                dst = random.choice([h for h in dsts if h != src])
             self.packet_queue[src].append({
                 'dst': dst,
                 'src': src,       # injection source — used for globally-consistent path lookup
@@ -1459,9 +1476,19 @@ class NetworkEngine:
         duration = max(1, int(self.flow_duration_steps))
         latest_start = max(1, self.episode_steps - duration + 1)
 
+        hot_srcs = [h for h in self._skew_hot_srcs if h in set(access_nodes)]
+        hot_dsts = [h for h in self._skew_hot_dsts if h in set(access_nodes)]
+        use_skew = self._skew_weight > 0.0 and hot_srcs and hot_dsts
+
         for _ in range(flow_count):
-            src = random.choice(access_nodes)
-            dst_choices = [h for h in access_nodes if h != src]
+            if use_skew and random.random() < self._skew_weight:
+                src = random.choice(hot_srcs)
+                dst_choices = [h for h in hot_dsts if h != src]
+                if not dst_choices:
+                    dst_choices = [h for h in access_nodes if h != src]
+            else:
+                src = random.choice(access_nodes)
+                dst_choices = [h for h in access_nodes if h != src]
             if not dst_choices:
                 continue
             dst = random.choice(dst_choices)
