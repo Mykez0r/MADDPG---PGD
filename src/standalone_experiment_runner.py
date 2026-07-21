@@ -1,15 +1,21 @@
 """
 Standalone Experiment Runner
 Three sequential phases:
-  Phase 1  â€” training  (all 6 variants, hop-by-hop mode)
-  Phase 2  â€” Paper-1 evaluation (architecture comparison + Shortest Path baseline)
-  Phase 3  â€” Paper-2 evaluation (FGSM adversarial attack study)
+  Phase 1  — training  (all 6 variants, hop-by-hop mode)
+  Phase 2  — Paper-1 evaluation (architecture comparison + Shortest Path baseline)
+  Phase 3  — Paper-2 evaluation (FGSM adversarial attack study)
 """
 
 import os
+# Allow PyTorch CUDA allocator to use expandable memory segments so that
+# fragmented GPU memory from multiple sequential MADDPG variant loads can be
+# reused without triggering false OOM errors.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+
 import sys
 import json
 import time
+import random
 import argparse
 import logging
 import warnings
@@ -33,7 +39,7 @@ sys.path.insert(0, 'src/maddpg_clean')
 sys.path.insert(0, 'src/attack_framework')
 sys.path.insert(0, 'tools')
 
-from maddpg_implementation import MADDPG
+from maddpg_implementation import MADDPG, set_global_seeds
 from network_environment import NetworkEngine, NetworkEnv
 from improved_fgsm_attack import FGSMAttackFramework, ThesisVisualizationSuite
 
@@ -110,7 +116,7 @@ def _episode_worker(args):
     import numpy as np
     import torch
 
-    # Block GPU access in worker â€” all actor inference is CPU-only
+    # Block GPU access in worker — all actor inference is CPU-only
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
     random.seed(worker_seed)
@@ -154,11 +160,13 @@ def _episode_worker(args):
             actor.eval()
             actors[i] = actor
 
-    # Build or reuse a cached NetworkEngine â€” topology is fully deterministic for
+    # Build or reuse a cached NetworkEngine — topology is fully deterministic for
     # fixed (topology_type, n_nodes, topo_seed) so it never needs rebuilding.
     # NetworkTopology.__init__ runs ~2400 nx.shortest_simple_paths calls; caching
     # this once per worker process eliminates the reconstruction cost every epoch.
-    _traffic_key = tuple(sorted((traffic_cfg or {}).items()))
+    # json.dumps handles nested dicts (e.g. a 'skew' block for hotspot training),
+    # which a tuple(sorted(...)) key cannot hash.
+    _traffic_key = json.dumps(traffic_cfg or {}, sort_keys=True, default=str)
     _topo_key = (topology_type, n_nodes, topo_seed, _traffic_key)
     if _topo_key not in _WORKER_ENV_CACHE:
         engine = NetworkEngine(
@@ -179,7 +187,7 @@ def _episode_worker(args):
     filtered = trainable_indices is not None and n_total_hosts != n_agents
     if filtered:
         trainable_set_idx = set(trainable_indices)
-        # Map topology index â†’ MADDPG agent index for action lookup
+        # Map topology index → MADDPG agent index for action lookup
         topo_to_maddpg = {topo_idx: ti for ti, topo_idx in enumerate(trainable_indices)}
 
     def _choose(agent_idx: int, obs) -> np.ndarray:
@@ -238,7 +246,7 @@ def _episode_worker(args):
             ncs = (engine.get_central_state(_trainable_hosts_local)
                    if use_central_state else None)
             done = [t == t_per_ep - 1] * n_agents
-            # Store only the trainable-agent slices â€” MADDPG expects exactly
+            # Store only the trainable-agent slices — MADDPG expects exactly
             # n_agents items in each list passed to store_transition.
             t_states = [np.array(states[i], dtype=np.float32) for i in trainable_indices]
             t_next   = [np.array(next_states[i], dtype=np.float32) for i in trainable_indices]
@@ -282,9 +290,9 @@ class StandaloneExperimentRunner:
         self.attack_framework = FGSMAttackFramework()
         if gpu_id >= 0:
             os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-        logger.info(f"Results â†’ {self.results_dir}")
+        logger.info(f"Results → {self.results_dir}")
 
-    # â”€â”€ config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── config ────────────────────────────────────────────────────────────────
 
     def _load_config(self, path: str) -> Dict:
         with open(path) as f:
@@ -358,7 +366,7 @@ class StandaloneExperimentRunner:
             for attack_cfg in cfg.get('attack_configs', []):
                 attack_cfg['evaluation_episodes'] = int(attack_eval_eps)
 
-    # â”€â”€ factory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── factory ───────────────────────────────────────────────────────────────
 
     def _make_variant(self, vcfg: Dict) -> Tuple[MADDPG, NetworkEngine, NetworkEnv]:
         reward_cfg = self.config.get('reward', {})
@@ -375,9 +383,9 @@ class StandaloneExperimentRunner:
         )
         env = NetworkEnv(engine)
 
-        # â”€â”€ Trainable-host filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Trainable-host filter ─────────────────────────────────────────────
         # Reduces the RL agent set from all topology nodes to a meaningful subset
-        # (e.g. only switches with degree â‰¥ 3) to shrink critic dimensions and
+        # (e.g. only switches with degree ≥ 3) to shrink critic dimensions and
         # speed up training without losing routing expressiveness.
         filter_mode = self.config.get('training', {}).get('trainable_host_filter', 'all')
         trainable_hosts = engine.get_trainable_hosts(filter_mode)
@@ -423,7 +431,7 @@ class StandaloneExperimentRunner:
         # GNN adjacency: built over the full topology when trainable hosts are
         # a strict subset (e.g. PE-router / access-nodes model).  Switch nodes
         # become relay nodes that participate in message passing but produce no
-        # policy output â€” two-hop communication between access nodes via shared
+        # policy output — two-hop communication between access nodes via shared
         # upstream switches emerges from the graph structure alone.
         if vcfg.get('use_gnn', False):
             relay_nodes = [h for h in all_hosts if h not in set(trainable_hosts)]
@@ -479,10 +487,10 @@ class StandaloneExperimentRunner:
 
     def _load_variant_checkpoint(self, maddpg: MADDPG, name: str):
         if maddpg.load_best_checkpoint():
-            logger.info(f"[CKPT] {name} â€” loaded best checkpoint")
+            logger.info(f"[CKPT] {name} — loaded best checkpoint")
         else:
             maddpg.load_checkpoint()
-            logger.info(f"[CKPT] {name} â€” loaded final checkpoint (best not found)")
+            logger.info(f"[CKPT] {name} — loaded final checkpoint (best not found)")
 
     @staticmethod
     def _build_full_actions(
@@ -586,13 +594,19 @@ class StandaloneExperimentRunner:
             ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
         return ep_rewards, ep_losses
 
-    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    # PHASE 1 â€” Training
-    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHASE 1 — Training
+    # ═══════════════════════════════════════════════════════════════════════════
 
     def train_variant(self, vcfg: Dict) -> Dict:
         name = vcfg['name']
-        logger.info(f"[TRAIN] {name} â€” start")
+        # Multi-seed support: training.seed controls BOTH network-weight init
+        # (via the global RNGs, previously unseeded in the main process) and the
+        # per-episode worker streams (via base_seed below).  Re-seeded at every
+        # variant start so results are independent of variant ordering.
+        train_seed = int(self.config.get('training', {}).get('seed', 42))
+        set_global_seeds(train_seed)
+        logger.info(f"[TRAIN] {name} — start (training seed = {train_seed})")
 
         # Always use 'spawn' for the worker pool.  'fork' after CUDA has been
         # initialised in the parent (which happens after the first variant
@@ -606,7 +620,7 @@ class StandaloneExperimentRunner:
         n_workers = n_workers_cfg if n_workers_cfg > 0 else min(eps_per_ep, max(1, mp.cpu_count() - 1))
         _mp_ctx = mp.get_context('spawn')
         worker_pool = _mp_ctx.Pool(processes=n_workers)
-        logger.info("[TRAIN] %s â€” using %d parallel episode workers (start=spawn)",
+        logger.info("[TRAIN] %s — using %d parallel episode workers (start=spawn)",
                     name, n_workers)
 
         maddpg, engine, env = self._make_variant(vcfg)
@@ -667,7 +681,7 @@ class StandaloneExperimentRunner:
 
         if freeze_single_link_nodes:
             logger.info(
-                "[TRAIN] %s â€” freezing %d/%d deterministic nodes",
+                "[TRAIN] %s — freezing %d/%d deterministic nodes",
                 name,
                 sum(deterministic_mask),
                 len(deterministic_mask),
@@ -686,7 +700,7 @@ class StandaloneExperimentRunner:
                 n_episodes=eps_per_ep, t_per_ep=t_per_ep,
                 epsilon=epoch_epsilon, deterministic_mask=deterministic_mask,
                 decision_block_size=decision_block_size,
-                epoch=epoch, base_seed=42,
+                epoch=epoch, base_seed=train_seed,
             )
             freq = int(cfg_t.get('learn_freq', 25))
             n_learns = (t_per_ep // freq) * eps_per_ep
@@ -744,7 +758,7 @@ class StandaloneExperimentRunner:
                     best_epoch = epoch
                     maddpg.save_best_checkpoint()
                     logger.info(
-                        "[TRAIN] %s â€” new best checkpoint at epoch %d (%s=%.4f)",
+                        "[TRAIN] %s — new best checkpoint at epoch %d (%s=%.4f)",
                         name,
                         epoch,
                         best_metric_name,
@@ -769,7 +783,7 @@ class StandaloneExperimentRunner:
                     early_stopped = True
                     stop_epoch = epoch
                     logger.info(
-                        "[TRAIN] %s â€” early stopping at epoch %d after %d checks without improvement",
+                        "[TRAIN] %s — early stopping at epoch %d after %d checks without improvement",
                         name,
                         epoch,
                         checks_without_improvement,
@@ -780,7 +794,7 @@ class StandaloneExperimentRunner:
         worker_pool.join()
 
         maddpg.save_checkpoint()
-        logger.info(f"[TRAIN] {name} â€” done")
+        logger.info(f"[TRAIN] {name} — done")
         return {
             'name':           name,
             'model_dir':      f"{self.results_dir}/models/{name}",
@@ -798,16 +812,16 @@ class StandaloneExperimentRunner:
         }
 
     def run_training(self) -> Dict:
-        logger.info("â•â•â•â•â•â• PHASE 1 â€” TRAINING â•â•â•â•â•â•")
+        logger.info("══════ PHASE 1 — TRAINING ══════")
         # Resume: load existing results so already-trained variants are skipped
         try:
             results = self._load('phase1_training_results.json')
-            logger.info("[TRAIN] Resuming â€” found existing results for: %s", list(results.keys()))
+            logger.info("[TRAIN] Resuming — found existing results for: %s", list(results.keys()))
         except Exception:
             results = {}
         for vcfg in self.config['variants']:
             if vcfg['name'] in results:
-                logger.info("[TRAIN] %s â€” already trained, skipping", vcfg['name'])
+                logger.info("[TRAIN] %s — already trained, skipping", vcfg['name'])
                 continue
             try:
                 results[vcfg['name']] = self.train_variant(vcfg)
@@ -819,12 +833,12 @@ class StandaloneExperimentRunner:
         self._generate_plots_for_phase(1)
         return results
 
-    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    # PHASE 2 â€” MADDPG evaluation
-    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHASE 2 — MADDPG evaluation
+    # ═══════════════════════════════════════════════════════════════════════════
 
     def evaluate_maddpg(self, training_results: Optional[Dict] = None) -> Dict:
-        logger.info("â•â•â•â•â•â• PHASE 2 â€” MADDPG EVALUATION â•â•â•â•â•â•")
+        logger.info("══════ PHASE 2 — MADDPG EVALUATION ══════")
         if training_results is None:
             training_results = self._load('phase1_training_results.json')
 
@@ -860,7 +874,7 @@ class StandaloneExperimentRunner:
                 name = vcfg['name']
                 if name not in training_results:
                     if name not in convergence_history:
-                        logger.warning(f"[P2] {name} â€” no trained model, skipping")
+                        logger.warning(f"[P2] {name} — no trained model, skipping")
                     continue
                 
                 logger.info(f"[P2]   {name}")
@@ -912,7 +926,7 @@ class StandaloneExperimentRunner:
                     logger.info(f"[P2]   Rank stability (top-{top_k}): tau={mean_tau:.3f}")
                     
                     if mean_tau >= stability_thresh:
-                        logger.info(f"[P2] âœ“ Rank stability achieved at {curr_seeds} seeds "
+                        logger.info(f"[P2] ✓ Rank stability achieved at {curr_seeds} seeds "
                                    f"(tau={mean_tau:.3f} >= {stability_thresh:.2f})")
                         stability_achieved = True
                         convergence_seed_n = curr_seeds
@@ -937,7 +951,7 @@ class StandaloneExperimentRunner:
         for vcfg in self.config['variants']:
             name = vcfg['name']
             if name not in training_results:
-                logger.warning(f"[P2] {name} â€” no trained model, skipping")
+                logger.warning(f"[P2] {name} — no trained model, skipping")
                 continue
             logger.info(f"[P2]   {name}")
             maddpg, engine, env = self._make_variant(vcfg)
@@ -978,7 +992,19 @@ class StandaloneExperimentRunner:
             load_sweep_results = self._run_phase2_load_sweep(training_results, curr_seeds, t_per_ep)
             self._save(load_sweep_results, 'phase2_load_sweep_results.json')
             ranking['load_sweep_summary'] = load_sweep_results.get('summary', {})
-        
+
+        hotspot_cfg = self.config.get('hotspot_sweep', {})
+        if bool(hotspot_cfg.get('enabled', False)):
+            logger.info("[P2] Running hotspot traffic sweep (skewed matrix)")
+            hotspot_results = self._run_hotspot_sweep(training_results, curr_seeds, t_per_ep)
+            self._save(hotspot_results, 'phase2_hotspot_sweep_results.json')
+
+        failure_cfg = self.config.get('failure_sweep', {})
+        if bool(failure_cfg.get('enabled', False)):
+            logger.info("[P2] Running targeted failure sweep")
+            failure_results = self._run_failure_sweep(training_results, curr_seeds, t_per_ep)
+            self._save(failure_results, 'phase2_failure_sweep_results.json')
+
         self._save(ranking, 'phase2_rankings.json')
         self._generate_plots_for_phase(2)
         logger.info("[P2] evaluation complete")
@@ -987,7 +1013,8 @@ class StandaloneExperimentRunner:
     def _run_eval_episodes(self, maddpg: MADDPG, env: NetworkEnv,
                            n_eps: int, t_per_ep: int,
                            n_link_failures: int = 0,
-                           offered_load_factor: float = 1.0) -> Dict:
+                           offered_load_factor: float = 1.0,
+                           target_links: list = None) -> Dict:
         ep_rewards, ep_utils = [], []
         ep_pdr, ep_resolved_pdr, ep_true_loss, ep_hop_frac, ep_goodput = [], [], [], [], []
         ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
@@ -998,10 +1025,11 @@ class StandaloneExperimentRunner:
         trainable_indices = getattr(env.engine, 'trainable_host_indices', None)
         n_total_hosts = getattr(env.engine, 'n_total_hosts', maddpg.n_agents)
         n_actions = maddpg.n_actions
+        _needs_failure = bool(n_link_failures or target_links)
         # Snapshot topology before the loop so each episode gets a fresh graph
         _topo_snapshot = (
             [(u, v, dict(d)) for u, v, d in env.engine.topology.graph.edges(data=True)]
-            if n_link_failures else None
+            if _needs_failure else None
         )
         for _ in range(n_eps):
             if _topo_snapshot is not None:
@@ -1010,8 +1038,8 @@ class StandaloneExperimentRunner:
                 G.add_edges_from(_topo_snapshot)
                 env.engine.topology.refresh_path_cache()
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
-            if n_link_failures:
-                self._inject_failures(env.engine, n_link_failures)
+            if _needs_failure:
+                self._inject_failures(env.engine, n_link_failures, target_links=target_links)
                 # Rebuild path caches on the post-failure topology so agents
                 # select from K paths that are actually reachable.  This lets
                 # different variants show differentiated routing behaviour;
@@ -1059,7 +1087,7 @@ class StandaloneExperimentRunner:
             # true_pkt_loss: unique dropped / unique injected (per-packet, correct denominator)
             'mean_true_pkt_loss':    float(np.mean(ep_true_loss)),
             'std_true_pkt_loss':     float(np.std(ep_true_loss)),
-            # resolved_pdr: delivered / (delivered + dropped) â€” excludes in-transit backlog
+            # resolved_pdr: delivered / (delivered + dropped) — excludes in-transit backlog
             'mean_resolved_pdr':     float(np.mean(ep_resolved_pdr)),
             'std_resolved_pdr':      float(np.std(ep_resolved_pdr)),
             # legacy metric: delivered / injected (penalised by episode-end backlog)
@@ -1086,9 +1114,10 @@ class StandaloneExperimentRunner:
     def _run_evpn_sp_episodes(self, engine: NetworkEngine,
                               n_eps: int, t_per_ep: int,
                               n_link_failures: int = 0,
-                              offered_load_factor: float = 1.0) -> Dict:
+                              offered_load_factor: float = 1.0,
+                              target_links: list = None) -> Dict:
         """EVPN with shortest-path tunnels: same forwarding model as MADDPG but always
-        selects k=0 (shortest path) per destination.  Primary baseline â€” same buffering,
+        selects k=0 (shortest path) per destination.  Primary baseline — same buffering,
         same queue dynamics, no learning."""
         ep_utils = []
         ep_pdr, ep_resolved_pdr, ep_true_loss, ep_hop_frac, ep_goodput = [], [], [], [], []
@@ -1106,10 +1135,11 @@ class StandaloneExperimentRunner:
         k0_action = np.zeros(n_actions, dtype=np.float32)
         k0_action[0::k_per_dest] = 1.0
         all_actions = [k0_action for _ in range(n_hosts)]
+        _needs_failure = bool(n_link_failures or target_links)
         # Snapshot topology before the loop so each episode gets a fresh graph
         _topo_snapshot = (
             [(u, v, dict(d)) for u, v, d in engine.topology.graph.edges(data=True)]
-            if n_link_failures else None
+            if _needs_failure else None
         )
 
         for _ in range(n_eps):
@@ -1119,8 +1149,8 @@ class StandaloneExperimentRunner:
                 G.add_edges_from(_topo_snapshot)
                 engine.topology.refresh_path_cache()
             engine.reset_with_load(offered_load_factor=offered_load_factor)
-            if n_link_failures:
-                self._inject_failures(engine, n_link_failures)
+            if _needs_failure:
+                self._inject_failures(engine, n_link_failures, target_links=target_links)
                 engine.topology.refresh_path_cache()
             for _ in range(t_per_ep):
                 engine.step(all_actions)
@@ -1226,7 +1256,7 @@ class StandaloneExperimentRunner:
             # true_pkt_loss: unique dropped / unique injected (per-packet, correct denominator)
             'mean_true_pkt_loss': float(np.mean(ep_true_loss)),
             'std_true_pkt_loss':  float(np.std(ep_true_loss)),
-            # resolved_pdr: delivered / (delivered + dropped) â€” excludes in-transit backlog
+            # resolved_pdr: delivered / (delivered + dropped) — excludes in-transit backlog
             'mean_resolved_pdr':  float(np.mean(ep_resolved_pdr)),
             'std_resolved_pdr':   float(np.std(ep_resolved_pdr)),
             # legacy metric: delivered / injected (penalised by episode-end backlog)
@@ -1252,23 +1282,32 @@ class StandaloneExperimentRunner:
         }
 
     @staticmethod
-    def _inject_failures(engine: NetworkEngine, n: int):
+    def _inject_failures(engine: NetworkEngine, n: int = 0,
+                          target_links: list = None):
         G = engine.topology.graph
-        # Only remove non-bridge edges: bridges create hard path cuts where no
-        # routing policy can recover, making all variants degrade identically.
-        bridge_set: set = set()
-        for u, v in nx.bridges(G):
-            bridge_set.add((u, v))
-            bridge_set.add((v, u))
-        candidates = [(u, v) for u, v in G.edges() if (u, v) not in bridge_set]
-        if not candidates:
-            # Fallback: no non-bridge edges available (rare), use all edges
-            candidates = list(G.edges())
-        chosen_indices = np.random.choice(len(candidates), size=min(n, len(candidates)), replace=False)
-        for idx in chosen_indices:
-            u, v = candidates[int(idx)]
-            if G.has_edge(u, v):
-                G.remove_edge(u, v)
+        if target_links:
+            # Targeted failure: remove explicitly named link pairs. Bidirectional
+            # edges are removed in both directions so the topology is symmetric.
+            for u, v in target_links:
+                if G.has_edge(u, v):
+                    G.remove_edge(u, v)
+                if G.has_edge(v, u):
+                    G.remove_edge(v, u)
+        else:
+            # Random non-bridge failure: only remove non-bridge edges so the
+            # graph stays connected and every variant has at least one path.
+            bridge_set: set = set()
+            for u, v in nx.bridges(G):
+                bridge_set.add((u, v))
+                bridge_set.add((v, u))
+            candidates = [(u, v) for u, v in G.edges() if (u, v) not in bridge_set]
+            if not candidates:
+                candidates = list(G.edges())
+            chosen_indices = np.random.choice(len(candidates), size=min(n, len(candidates)), replace=False)
+            for idx in chosen_indices:
+                u, v = candidates[int(idx)]
+                if G.has_edge(u, v):
+                    G.remove_edge(u, v)
         # Do NOT refresh_path_cache here: callers rebuild the path caches
         # immediately after this call so that all K paths in kpath_cache are
         # reachable on the post-failure topology.  Refreshing inside this
@@ -1345,6 +1384,234 @@ class StandaloneExperimentRunner:
 
         return out
 
+    def _run_hotspot_sweep(self, training_results: Dict, n_eps: int, t_per_ep: int) -> Dict:
+        """Load sweep with a skewed traffic matrix (CDN-like many-to-few pattern).
+
+        Evaluates the same trained checkpoints as the uniform sweep but injects
+        traffic where `skew_weight` fraction of flows are forced from `hot_srcs`
+        to `hot_dsts`.  SP is expected to congest the transit links feeding those
+        destinations; MADDPG should route around them.
+        """
+        hotspot_cfg = self.config.get('hotspot_sweep', {})
+        loads = [float(x) for x in hotspot_cfg.get('offered_loads', [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0])]
+        skew_weight = float(hotspot_cfg.get('skew_weight', 0.75))
+        hot_srcs = hotspot_cfg.get('hot_srcs', ['BS1', 'BS2', 'BS3', 'BS4', 'MECS1', 'MECS2', 'MECS3', 'MECS4'])
+        hot_dsts = hotspot_cfg.get('hot_dsts', ['CS1', 'CS2'])
+
+        skewed_traffic_cfg = {**self.config.get('traffic', {}), 'skew': {
+            'weight': skew_weight,
+            'hot_srcs': hot_srcs,
+            'hot_dsts': hot_dsts,
+        }}
+
+        topology_cfg = self.config.get('topology', {})
+        reward_cfg = self.config.get('reward', {})
+        filter_mode = self.config.get('training', {}).get('trainable_host_filter', 'all')
+
+        out = {
+            'meta': {
+                'loads': loads,
+                'evaluation_episodes': int(n_eps),
+                'timesteps_per_episode': int(t_per_ep),
+                'skew_weight': skew_weight,
+                'hot_srcs': hot_srcs,
+                'hot_dsts': hot_dsts,
+                'description': (
+                    f'{skew_weight*100:.0f}% of flows go from {hot_srcs} to {hot_dsts}; '
+                    'rest uniform. Tests routing under CDN-like traffic concentration.'
+                ),
+            },
+            'methods': {},
+        }
+
+        for vcfg in self.config['variants']:
+            name = vcfg['name']
+            if name not in training_results:
+                continue
+            logger.info(f"[P2][HOTSPOT] {name}")
+            # Reuse trained MADDPG from the uniform-traffic checkpoint; only the
+            # evaluation engine uses the skewed traffic config.
+            maddpg, _, _ = self._make_variant(vcfg)
+            self._load_variant_checkpoint(maddpg, name)
+
+            hot_engine = NetworkEngine(
+                topology_type=topology_cfg.get('type', 'service_provider'),
+                n_nodes=int(topology_cfg.get('nodes', 65)),
+                reward_config=reward_cfg,
+                topology_config=topology_cfg,
+                traffic_config=skewed_traffic_cfg,
+            )
+            all_hosts = hot_engine.get_all_hosts()
+            trainable_hosts = hot_engine.get_trainable_hosts(filter_mode)
+            host_to_idx = {h: i for i, h in enumerate(all_hosts)}
+            hot_engine.trainable_host_indices = [host_to_idx[h] for h in trainable_hosts]
+            hot_engine.n_total_hosts = len(all_hosts)
+            hot_env = NetworkEnv(hot_engine)
+
+            method_payload = {}
+            for i, load in enumerate(loads, 1):
+                key = f"load_{load:.2f}"
+                logger.info(f"[P2][HOTSPOT] {name}  load={load:.2f}  ({i}/{len(loads)})")
+                method_payload[key] = self._run_eval_episodes(
+                    maddpg, hot_env, n_eps, t_per_ep,
+                    n_link_failures=0,
+                    offered_load_factor=load,
+                )
+            out['methods'][name] = method_payload
+
+        logger.info("[P2][HOTSPOT] EVPN_SP")
+        sp_hot_engine = NetworkEngine(
+            topology_type=topology_cfg.get('type', 'service_provider'),
+            n_nodes=int(topology_cfg.get('nodes', 65)),
+            traffic_config=skewed_traffic_cfg,
+        )
+        sp_payload = {}
+        for i, load in enumerate(loads, 1):
+            key = f"load_{load:.2f}"
+            logger.info(f"[P2][HOTSPOT] EVPN_SP  load={load:.2f}  ({i}/{len(loads)})")
+            sp_payload[key] = self._run_evpn_sp_episodes(
+                sp_hot_engine, n_eps, t_per_ep,
+                n_link_failures=0,
+                offered_load_factor=load,
+            )
+        out['methods']['EVPN_SP'] = sp_payload
+
+        return out
+
+    def _run_failure_sweep(self, training_results: Dict, n_eps: int, t_per_ep: int) -> Dict:
+        """Load sweep with targeted link failures on primary inter-cluster paths.
+
+        Fails the links named in failure_sweep.target_links at the start of every
+        episode (restored between episodes).  Sweeps offered load across both uniform
+        and (optionally) hotspot traffic matrices so that the two stressors can be
+        studied in isolation and combined.
+
+        SP is expected to flood the surviving paths with all rerouted traffic; MADDPG
+        CC variants should distribute load across the remaining K-paths.
+        """
+        cfg = self.config.get('failure_sweep', {})
+        loads = [float(x) for x in cfg.get('offered_loads', [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0])]
+        target_links = [list(lp) for lp in cfg.get('target_links', [['S8', 'S13'], ['S8', 'S22']])]
+        include_hotspot = bool(cfg.get('include_hotspot', True))
+
+        topology_cfg = self.config.get('topology', {})
+        reward_cfg   = self.config.get('reward', {})
+        base_traffic = self.config.get('traffic', {})
+        filter_mode  = self.config.get('training', {}).get('trainable_host_filter', 'all')
+
+        hs_cfg = cfg.get('hotspot', self.config.get('hotspot_sweep', {}))
+        skew_weight = float(hs_cfg.get('skew_weight', 0.75))
+        hot_srcs    = hs_cfg.get('hot_srcs', ['BS1', 'BS2', 'BS3', 'BS4', 'MECS1', 'MECS2', 'MECS3', 'MECS4'])
+        hot_dsts    = hs_cfg.get('hot_dsts', ['CS1', 'CS2'])
+        skewed_traffic = {**base_traffic, 'skew': {
+            'weight': skew_weight, 'hot_srcs': hot_srcs, 'hot_dsts': hot_dsts,
+        }}
+
+        out = {
+            'meta': {
+                'loads': loads,
+                'evaluation_episodes': int(n_eps),
+                'timesteps_per_episode': int(t_per_ep),
+                'target_links': target_links,
+                'include_hotspot': include_hotspot,
+                'skew_weight': skew_weight if include_hotspot else None,
+                'hot_srcs': hot_srcs if include_hotspot else None,
+                'hot_dsts': hot_dsts if include_hotspot else None,
+                'description': (
+                    f'Targeted failure: {target_links}. '
+                    f'Fails primary inter-cluster links so rerouted traffic '
+                    f'must share surviving capacity. Tests under uniform and '
+                    f'hotspot traffic matrices.'
+                ),
+            },
+            'methods': {},
+        }
+
+        def _make_engine(traffic_cfg):
+            eng = NetworkEngine(
+                topology_type=topology_cfg.get('type', 'service_provider'),
+                n_nodes=int(topology_cfg.get('nodes', 65)),
+                reward_config=reward_cfg,
+                topology_config=topology_cfg,
+                traffic_config=traffic_cfg,
+            )
+            all_hosts = eng.get_all_hosts()
+            trainable  = eng.get_trainable_hosts(filter_mode)
+            h2i = {h: i for i, h in enumerate(all_hosts)}
+            eng.trainable_host_indices = [h2i[h] for h in trainable]
+            eng.n_total_hosts = len(all_hosts)
+            return eng
+
+        # Engines are created once before the variant loop so that NetworkTopology's
+        # global random.seed(42) call (in __init__) doesn't reset the RNG for each
+        # variant, which would make every variant see an identical traffic sequence.
+        uni_engine = _make_engine(base_traffic)
+        uni_env    = NetworkEnv(uni_engine)
+        hot_engine = _make_engine(skewed_traffic) if include_hotspot else None
+        hot_env    = NetworkEnv(hot_engine) if hot_engine else None
+
+        for vcfg in self.config['variants']:
+            name = vcfg['name']
+            if name not in training_results:
+                continue
+            logger.info(f"[P2][FAILURE] {name}")
+            maddpg, _, _ = self._make_variant(vcfg)
+            self._load_variant_checkpoint(maddpg, name)
+
+            uni_payload = {}
+            hot_payload = {} if include_hotspot else None
+            for i, load in enumerate(loads, 1):
+                key = f"load_{load:.2f}"
+                logger.info(f"[P2][FAILURE] {name}  load={load:.2f}  ({i}/{len(loads)})")
+                uni_payload[key] = self._run_eval_episodes(
+                    maddpg, uni_env, n_eps, t_per_ep,
+                    offered_load_factor=load,
+                    target_links=target_links,
+                )
+                if include_hotspot:
+                    hot_payload[key] = self._run_eval_episodes(
+                        maddpg, hot_env, n_eps, t_per_ep,
+                        offered_load_factor=load,
+                        target_links=target_links,
+                    )
+            out['methods'][name] = {'uniform': uni_payload}
+            if include_hotspot:
+                out['methods'][name]['hotspot'] = hot_payload
+
+        logger.info("[P2][FAILURE] EVPN_SP")
+        sp_uni_engine = NetworkEngine(
+            topology_type=topology_cfg.get('type', 'service_provider'),
+            n_nodes=int(topology_cfg.get('nodes', 65)),
+            traffic_config=base_traffic,
+        )
+        sp_hot_engine = NetworkEngine(
+            topology_type=topology_cfg.get('type', 'service_provider'),
+            n_nodes=int(topology_cfg.get('nodes', 65)),
+            traffic_config=skewed_traffic,
+        ) if include_hotspot else None
+
+        sp_uni_payload = {}
+        sp_hot_payload = {} if include_hotspot else None
+        for i, load in enumerate(loads, 1):
+            key = f"load_{load:.2f}"
+            logger.info(f"[P2][FAILURE] EVPN_SP  load={load:.2f}  ({i}/{len(loads)})")
+            sp_uni_payload[key] = self._run_evpn_sp_episodes(
+                sp_uni_engine, n_eps, t_per_ep,
+                offered_load_factor=load,
+                target_links=target_links,
+            )
+            if include_hotspot:
+                sp_hot_payload[key] = self._run_evpn_sp_episodes(
+                    sp_hot_engine, n_eps, t_per_ep,
+                    offered_load_factor=load,
+                    target_links=target_links,
+                )
+        out['methods']['EVPN_SP'] = {'uniform': sp_uni_payload}
+        if include_hotspot:
+            out['methods']['EVPN_SP']['hotspot'] = sp_hot_payload
+
+        return out
+
     def _compute_critical_load(self, scenario_payload: Dict) -> Optional[float]:
         if not scenario_payload:
             return None
@@ -1370,14 +1637,60 @@ class StandaloneExperimentRunner:
                 return last_ok
         return last_ok
 
-    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    # PHASE 3 â€” FGSM atttack evaluation
-    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHASE 3 — FGSM atttack evaluation
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _make_attack_env(self, hotspot_cfg: Optional[Dict]) -> NetworkEnv:
+        """Build an evaluation environment for the FGSM phase.
+
+        When hotspot_cfg is provided, traffic is skewed onto the hot src/dst pairs
+        so that the attack is evaluated under a concentrated demand matrix (the
+        regime in which routing decisions — and therefore adversarial perturbation
+        of them — actually move delivery). Returns a NetworkEnv with the trainable
+        agent indices attached, matching _make_variant's bookkeeping.
+        """
+        topology_cfg = self.config.get('topology', {})
+        reward_cfg   = self.config.get('reward', {})
+        base_traffic = self.config.get('traffic', {})
+        filter_mode  = self.config.get('training', {}).get('trainable_host_filter', 'all')
+
+        traffic = dict(base_traffic)
+        if hotspot_cfg:
+            traffic['skew'] = {
+                'weight':   float(hotspot_cfg.get('skew_weight', 0.75)),
+                'hot_srcs': hotspot_cfg.get('hot_srcs', []),
+                'hot_dsts': hotspot_cfg.get('hot_dsts', []),
+            }
+
+        eng = NetworkEngine(
+            topology_type=topology_cfg.get('type', 'service_provider'),
+            n_nodes=int(topology_cfg.get('nodes', 65)),
+            reward_config=reward_cfg,
+            topology_config=topology_cfg,
+            traffic_config=traffic,
+        )
+        all_hosts  = eng.get_all_hosts()
+        trainable  = eng.get_trainable_hosts(filter_mode)
+        h2i = {h: i for i, h in enumerate(all_hosts)}
+        eng.trainable_host_indices = [h2i[h] for h in trainable]
+        eng.n_total_hosts = len(all_hosts)
+        return NetworkEnv(eng)
 
     def evaluate_fgsm(self, training_results: Optional[Dict] = None) -> Dict:
-        logger.info("â•â•â•â•â•â• PHASE 3 â€” FGSM ATTACK EVALUATION â•â•â•â•â•â•")
+        logger.info("══════ PHASE 3 — FGSM ATTACK EVALUATION ══════")
         if training_results is None:
             training_results = self._load('phase1_training_results.json')
+
+        # Attack evaluation regime: elevated load + (optionally) hotspot traffic.
+        # Attacks at nominal uniform load are uninformative — the lightly loaded
+        # network has ample spare capacity, so perturbing path choice does not
+        # produce drops. We therefore evaluate under stress by default.
+        attack_eval_cfg = self.config.get('attack_eval', {})
+        attack_load = float(attack_eval_cfg.get('offered_load_factor', 2.0))
+        attack_hotspot = attack_eval_cfg.get('hotspot') or None
+        logger.info(f"[P3] Attack regime: load={attack_load:.2f}x  "
+                    f"hotspot={'on' if attack_hotspot else 'off'}")
 
         phase_t0 = time.time()
         runtime_cfg = self.config.get('runtime_control', {})
@@ -1413,7 +1726,7 @@ class StandaloneExperimentRunner:
                 for _k, _v in _partial.items():
                     if _k != '_run_config':
                         all_results[_k] = _v
-                logger.info(f"[P3] Resumed partial results â€” {len(all_results) - 1} variant(s) already done")
+                logger.info(f"[P3] Resumed partial results — {len(all_results) - 1} variant(s) already done")
             except Exception as _e:
                 logger.warning(f"[P3] Could not load partial results: {_e}")
 
@@ -1425,14 +1738,17 @@ class StandaloneExperimentRunner:
             variant_t0 = time.time()
             name = vcfg['name']
             if name not in training_results:
-                logger.warning(f"[P2] {name} â€” no trained model, skipping")
+                logger.warning(f"[P2] {name} — no trained model, skipping")
                 continue
             if name in all_results:
-                logger.info(f"[P3] {name} â€” already complete (resuming), skipping")
+                logger.info(f"[P3] {name} — already complete (resuming), skipping")
                 continue
             logger.info(f"[P2] Attacking {name}")
             maddpg, engine, env = self._make_variant(vcfg)
             self._load_variant_checkpoint(maddpg, name)
+            # Evaluate the attack under the stress regime (load + hotspot), not on
+            # the lightly loaded uniform env returned by _make_variant.
+            env = self._make_attack_env(attack_hotspot)
             variant_results = {}
             skipped_cases = []
             critical_by_type = {}
@@ -1441,16 +1757,21 @@ class StandaloneExperimentRunner:
 
             # Standard FGSM sweep
             for acfg in attack_configs:
-                atype    = acfg['attack_type']
-                eps      = acfg['epsilon']
-                n_eps    = acfg['evaluation_episodes']
-                t_per_ep = self.config['training']['timesteps_per_episode']
-                key      = f"{atype}_eps{eps}"
+                atype          = acfg['attack_type']
+                eps            = acfg['epsilon']
+                n_eps          = acfg['evaluation_episodes']
+                t_per_ep       = self.config['training']['timesteps_per_episode']
+                attack_fraction = float(acfg.get('attack_fraction', 1.0))
+                key = (
+                    f"{atype}_eps{eps}_frac{attack_fraction:.2f}"
+                    if attack_fraction < 1.0 else f"{atype}_eps{eps}"
+                )
 
                 if phase3_skip_after_critical and atype in critical_by_type and eps > critical_by_type[atype]:
                     skipped_cases.append({
                         'attack_type': atype,
                         'epsilon': eps,
+                        'attack_fraction': attack_fraction,
                         'reason': 'skipped_after_critical_epsilon',
                     })
                     continue
@@ -1458,21 +1779,33 @@ class StandaloneExperimentRunner:
                 logger.info(f"[P2]   {name}  {key}")
                 case_t0 = time.time()
                 try:
-                    clean    = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
+                    clean    = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
+                                                     offered_load_factor=attack_load)
                     attacked = self._attack_episodes(maddpg, env, n_eps, t_per_ep,
                                                      attack=True, attack_type=atype,
-                                                     epsilon=eps)
+                                                     epsilon=eps,
+                                                     attack_fraction=attack_fraction,
+                                                     offered_load_factor=attack_load)
                 except torch.cuda.OutOfMemoryError:
-                    logger.warning(f"[P3]   {name}  {key} â€” CUDA OOM, recording as failed")
+                    logger.warning(f"[P3]   {name}  {key} — CUDA OOM, recording as failed")
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                    variant_results[key] = {'error': 'CUDA_OOM', 'run_config': {'attack_type': atype, 'epsilon': eps}}
+                    variant_results[key] = {'error': 'CUDA_OOM', 'run_config': {'attack_type': atype, 'epsilon': eps, 'attack_fraction': attack_fraction}}
                     skipped_cases.append({'attack_type': atype, 'epsilon': eps, 'reason': 'CUDA_OOM'})
                     consecutive_failures += 1
                     if atype not in critical_by_type:
                         critical_by_type[atype] = eps
                     continue
                 slo_eval = self._evaluate_attack_slo(clean, attacked)
+                # Per-case observability: emit the paired clean->attacked PDR drop
+                # to the log immediately, so a broken or no-op attack is visible
+                # from the first case rather than only after the whole variant
+                # (which is saved to JSON) completes.
+                _cp = float(clean.get('mean_end_to_end_pdr', 0.0))
+                _ap = float(attacked.get('mean_end_to_end_pdr', 0.0))
+                logger.info(f"[P2]     {key}: clean {_cp:5.1f}% -> attacked {_ap:5.1f}%  "
+                            f"drop {_cp - _ap:+5.1f}pp  "
+                            f"SLO={'ok' if slo_eval['success'] else 'BREAK'}")
                 variant_results[key] = {
                     'clean': clean, 'attacked': attacked,
                     'metrics': self._compare(clean, attacked),
@@ -1510,9 +1843,10 @@ class StandaloneExperimentRunner:
                 t_per_ep = self.config['training']['timesteps_per_episode']
                 try:
                     variant_results['surface'] = self._attack_surface_analysis(
-                        maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep, epsilon=0.10)
+                        maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep, epsilon=0.10,
+                        offered_load_factor=attack_load)
                 except torch.cuda.OutOfMemoryError:
-                    logger.warning(f"[P3]   {name}  attack surface analysis â€” CUDA OOM, skipping")
+                    logger.warning(f"[P3]   {name}  attack surface analysis — CUDA OOM, skipping")
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                     variant_results['surface'] = {'error': 'CUDA_OOM'}
@@ -1523,9 +1857,10 @@ class StandaloneExperimentRunner:
                     try:
                         variant_results['gnn_embedding_attack'] = self._attack_episodes(
                             maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep,
-                            attack=True, attack_type='packet_loss', epsilon=0.10)
+                            attack=True, attack_type='packet_loss', epsilon=0.10,
+                            offered_load_factor=attack_load)
                     except torch.cuda.OutOfMemoryError:
-                        logger.warning(f"[P3]   {name}  GNN embedding attack â€” CUDA OOM, skipping")
+                        logger.warning(f"[P3]   {name}  GNN embedding attack — CUDA OOM, skipping")
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
                         variant_results['gnn_embedding_attack'] = {'error': 'CUDA_OOM'}
@@ -1544,10 +1879,21 @@ class StandaloneExperimentRunner:
             }
             all_results[name] = variant_results
 
-            # Incremental save â€” preserve progress even if a later variant crashes
+            # Incremental save — preserve progress even if a later variant crashes
             self._save(all_results, 'phase3_fgsm_results.json')
 
-            # Release GPU memory before processing the next variant to prevent OOM
+            # Release GPU memory before processing the next variant to prevent OOM.
+            # Explicitly move all model parameters to CPU before deletion so that
+            # Python reference cycles cannot keep tensors pinned on the GPU.
+            if torch.cuda.is_available():
+                for agent in getattr(maddpg, 'agents', []):
+                    for net in ('actor', 'critic', 'target_actor', 'target_critic'):
+                        m = getattr(agent, net, None)
+                        if m is not None:
+                            m.cpu()
+                gnn = getattr(maddpg, 'gnn_processor', None)
+                if gnn is not None:
+                    gnn.cpu()
             del maddpg, engine, env
             gc.collect()
             gc.collect()  # two passes to break cycles
@@ -1579,14 +1925,232 @@ class StandaloneExperimentRunner:
         logger.info("[P3] evaluation complete")
         return all_results
 
+    def _build_critic_attack_context(self, maddpg, env, states, trainable_indices):
+        """Assemble fixed context for the critic-grounded attack at one timestep.
+
+        Returns the true central state and the clean block-onehot joint action of
+        all trainable agents (the fixed a_{-i} the critic conditions on), plus the
+        per-destination decision-block size. Only valid for central-critic variants.
+        """
+        if getattr(maddpg, 'critic_type', None) != 'central_critic':
+            return None
+        if getattr(maddpg, 'gnn_processor', None) is not None:
+            # GNN actors require jointly-encoded observations; the single-agent
+            # differentiable path is not yet wired for that. Restrict to non-GNN CC.
+            logger.warning("[P3] critic_grounded attack unsupported on GNN variants — skipping context")
+            return None
+        engine = env.engine
+        hosts = engine.get_all_hosts()
+        trainable_hosts = [hosts[i] for i in trainable_indices]
+        # True central state <B, D> (138-dim), held fixed during the attack.
+        central_state = engine.get_central_state(trainable_hosts)
+        # Clean continuous actions for every trainable agent, then block-argmax onehot.
+        t_states = [states[i] for i in trainable_indices]
+        policy_actions = maddpg.choose_action(t_states)        # list of [n_actions] arrays
+        n_actions = maddpg.n_actions
+        n_dest = getattr(engine, 'n_destinations', 1)
+        block_size = max(1, n_actions // max(1, n_dest))
+        joint = np.zeros((len(trainable_indices), n_actions), dtype=np.float32)
+        for ai, pa in enumerate(policy_actions):
+            pa = np.asarray(pa, dtype=np.float32)
+            for bs in range(0, n_actions, block_size):
+                be = min(bs + block_size, n_actions)
+                joint[ai, bs + int(np.argmax(pa[bs:be]))] = 1.0
+        return {'central_state': central_state, 'joint_onehot': joint, 'block_size': block_size}
+
+    def _rule_action(self, host, rule, engine, rng):
+        """Build a per-destination one-hot routing action from a fixed rule.
+
+        For each destination, score the K precomputed paths by their true
+        bottleneck utilisation and select one:
+          worst  → most-congested path  (adversarial upper bound on damage)
+          greedy → least-congested path (myopic per-step least-utilised choice;
+                   a heuristic, NOT a flow-optimum — the trained policy can beat it)
+          sp     → k=0 (shortest path; EVPN-SP-like)
+          random → uniform among available paths
+        """
+        access = list(engine.topology.access_nodes)
+        n_dest = len(access)
+        n_actions = engine.n_actions
+        K = max(1, n_actions // n_dest)
+        a = np.zeros(n_actions, dtype=np.float32)
+        for d, dst in enumerate(access):
+            paths = engine.topology.kpath_cache.get((host, dst), [])
+            n_avail = min(len(paths), K)
+            if n_avail == 0:
+                chosen = 0
+            else:
+                utils = []
+                for k in range(n_avail):
+                    p = paths[k]
+                    if len(p) >= 2:
+                        u = max(engine.topology.get_util(p[j], p[j + 1])
+                                for j in range(len(p) - 1))
+                    else:
+                        u = 0.0
+                    utils.append(u)
+                if rule == 'worst':
+                    chosen = int(np.argmax(utils))
+                elif rule == 'greedy':
+                    chosen = int(np.argmin(utils))
+                elif rule == 'sp':
+                    chosen = 0
+                elif rule == 'random':
+                    chosen = rng.randrange(n_avail)
+                else:
+                    chosen = 0
+            a[d * K + chosen] = 1.0
+        return a
+
+    def fgsm_probe(self) -> Dict:
+        """Diagnostic: does a stronger attack actually flip routing decisions?
+
+        For the reference variant (variants[0]) at the attack regime, sweeps
+        single-step FGSM and multi-step PGD at several budgets, reporting for
+        each the clean->attacked end-to-end PDR AND the action-flip rate (the
+        fraction of per-(agent,destination) argmax path choices the perturbation
+        changes). Interpretation:
+          flip~0 everywhere        -> attack cannot move the policy (under-powered
+                                      or genuinely robust argmax margins)
+          flip high, PDR flat      -> decisions change but routing absorbs them
+                                      (genuine routing robustness at THIS operating
+                                      point — but redundancy may vanish under stress)
+          PDR drops with budget/stress -> exploitable; escalate the real sweep
+
+        Both the attack grid and the operating-CONDITIONS grid are config-driven,
+        so the same method probes (a) attack budget at a fixed condition and
+        (b) a fixed strong attack across load/failure stress, where thinning path
+        redundancy is expected to convert decision-flips into real delivery loss.
+        """
+        logger.info("══════ FGSM PROBE (flip-rate + PGD + stress) ══════")
+        attack_eval = self.config.get('attack_eval', {})
+        attack_load = float(attack_eval.get('offered_load_factor', 2.0))
+        attack_hotspot = attack_eval.get('hotspot') or None
+        t_per_ep = self.config['training']['timesteps_per_episode']
+        n_eps = int(attack_eval.get('probe_episodes', 8))
+
+        vcfg = self.config['variants'][0]
+        maddpg, _, _ = self._make_variant(vcfg)
+        self._load_variant_checkpoint(maddpg, vcfg['name'])
+        env = self._make_attack_env(attack_hotspot)
+
+        # Attack grid: (attack_type, epsilon, n_steps). Default = budget sweep.
+        default_attacks = [
+            ('packet_loss',    0.05, 1), ('packet_loss', 0.10, 1),
+            ('packet_loss',    0.20, 1), ('packet_loss', 0.30, 1),
+            ('packet_loss',    0.20, 10), ('packet_loss', 0.30, 10),
+            ('reward_minimize', 0.30, 10),
+            ('random',         0.30, 1),
+        ]
+        attacks = [tuple(a) for a in attack_eval.get('probe_attacks', default_attacks)]
+        # Operating-conditions grid: list of {load, n_failures}. Default = base only.
+        conditions = attack_eval.get('probe_conditions',
+                                     [{'load': attack_load, 'n_failures': 0}])
+
+        out = {}
+        for cond in conditions:
+            load = float(cond.get('load', attack_load))
+            nf = int(cond.get('n_failures', 0))
+            cond_key = f"load{load:g}_fail{nf}"
+            logger.info(f"[PROBE] === condition {cond_key} "
+                        f"(hotspot={'on' if attack_hotspot else 'off'}, eps/cfg={n_eps}) ===")
+            # Clean baseline at this operating condition (shared across attacks).
+            clean = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
+                                          offered_load_factor=load, n_link_failures=nf)
+            cp = clean['mean_end_to_end_pdr']
+            logger.info(f"[PROBE] {cond_key}  clean PDR = {cp:.1f}%")
+            for atype, eps, nsteps in attacks:
+                self.attack_framework.n_steps = int(nsteps)
+                self.attack_framework.step_alpha = eps if nsteps == 1 else (eps / nsteps * 2.5)
+                att = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
+                                            attack_type=atype, epsilon=eps,
+                                            offered_load_factor=load, n_link_failures=nf,
+                                            measure_flips=True)
+                ap = att['mean_end_to_end_pdr']
+                fr = att.get('action_flip_rate')
+                key = f"{cond_key}__{atype}_eps{eps}_steps{nsteps}"
+                out[key] = {'condition': cond_key, 'load': load, 'n_failures': nf,
+                            'attack_type': atype, 'epsilon': eps, 'n_steps': nsteps,
+                            'clean_pdr': cp, 'attacked_pdr': ap, 'drop_pp': cp - ap,
+                            'action_flip_rate': fr}
+                logger.info(f"[PROBE]   {atype}_eps{eps}_s{nsteps:<2d} "
+                            f"{cp:5.1f}%->{ap:5.1f}%  drop {cp - ap:+5.1f}pp  flips "
+                            f"{(fr * 100 if fr is not None else float('nan')):5.1f}%")
+        self.attack_framework.n_steps = 1
+        self.attack_framework.step_alpha = 0.0
+        self._save(out, 'fgsm_probe_results.json')
+        logger.info("[PROBE] done")
+        return out
+
+    def measure_damage_ceiling(self) -> Dict:
+        """Bound the achievable-damage envelope at the attack operating point.
+
+        Runs the trained policy plus four fixed routing rules on identical paired
+        traffic, all at the FGSM attack regime (elevated load + hotspot). The
+        clean→worst PDR gap is the ceiling any observation-space attack could ever
+        reach; if it is small, low attack magnitudes are the operating point's
+        limit, not the attack's.
+        """
+        logger.info("══════ DAMAGE-CEILING DIAGNOSTIC ══════")
+        attack_eval = self.config.get('attack_eval', {})
+        attack_load = float(attack_eval.get('offered_load_factor', 1.0))
+        attack_hotspot = attack_eval.get('hotspot')
+        target_links = attack_eval.get('target_links')
+        if target_links:
+            target_links = [list(lp) for lp in target_links]
+        n_link_failures = int(attack_eval.get('n_link_failures', 0))
+        n_eps = int(attack_eval.get('ceiling_episodes', 50))
+        t_per_ep = self.config['training']['timesteps_per_episode']
+        _fail_desc = (target_links if target_links
+                      else (f'{n_link_failures} random' if n_link_failures else 'none'))
+        logger.info(f"[CEILING] regime: load={attack_load:.2f}x  hotspot={'on' if attack_hotspot else 'off'}  "
+                    f"failures={_fail_desc}  eps={n_eps}")
+
+        vcfg = self.config['variants'][0]  # any trained variant provides the clean reference
+        maddpg, engine, env = self._make_variant(vcfg)
+        self._load_variant_checkpoint(maddpg, vcfg['name'])
+        env = self._make_attack_env(attack_hotspot)
+
+        out = {}
+        runs = [('policy', None), ('greedy', 'greedy'), ('sp', 'sp'),
+                ('random', 'random'), ('worst', 'worst')]
+        for label, rule in runs:
+            res = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
+                                        offered_load_factor=attack_load, routing_rule=rule,
+                                        target_links=target_links, n_link_failures=n_link_failures)
+            out[label] = res
+            logger.info(f"[CEILING] {label:8s} PDR={res['mean_end_to_end_pdr']:6.2f}%  "
+                        f"loss={res['mean_pkt_loss']:5.2f}%  reward={res['mean_reward']:8.2f}")
+        pol = out['policy']['mean_end_to_end_pdr']
+        worst = out['worst']['mean_end_to_end_pdr']
+        logger.info(f"[CEILING] policy→worst PDR gap = {pol - worst:+.2f}pp  "
+                    f"(max damage an observation attack could extract)")
+        out['_meta'] = {'reference_variant': vcfg['name'], 'attack_load': attack_load,
+                        'hotspot': bool(attack_hotspot), 'target_links': target_links,
+                        'n_link_failures': n_link_failures,
+                        'n_eps': n_eps, 'policy_minus_worst_pp': pol - worst}
+        self._save(out, 'damage_ceiling.json')
+        logger.info("[CEILING] done")
+        return out
+
     def _attack_episodes(self, maddpg: MADDPG, env: NetworkEnv,
                          n_eps: int, t_per_ep: int,
                          attack: bool = False,
                          attack_type: str = 'packet_loss',
                          epsilon: float = 0.05,
-                         targeted_tiers: Optional[List[str]] = None) -> Dict:
+                         targeted_tiers: Optional[List[str]] = None,
+                         attack_fraction: float = 1.0,
+                         offered_load_factor: float = 1.0,
+                         traffic_seed: int = 20240601,
+                         routing_rule: Optional[str] = None,
+                         target_links: Optional[list] = None,
+                         n_link_failures: int = 0,
+                         measure_flips: bool = False) -> Dict:
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
+        _flip_changed = 0   # per-(agent,destination) argmax decisions the attack flips
+        _flip_total = 0
+        _n_dest_flip = len(env.engine.topology.access_nodes)
         hosts = env.engine.get_all_hosts()
         trainable_indices = getattr(env.engine, 'trainable_host_indices', None)
         n_total_hosts = getattr(env.engine, 'n_total_hosts', maddpg.n_agents)
@@ -1602,11 +2166,65 @@ class StandaloneExperimentRunner:
             self.attack_framework.epsilon = float(epsilon)
             self.attack_framework.attack_type = attack_type
 
+        # Seed the global RNG so the injected-traffic sequence is identical between
+        # the clean and attacked runs of this case: routing decisions do not draw
+        # from this RNG, so clean vs. attacked becomes a paired comparison on the
+        # same traffic and the only difference is the adversarial perturbation.
+        random.seed(traffic_seed)
+        np.random.seed(traffic_seed)
+        torch.manual_seed(traffic_seed)
+        # Dedicated RNG for choosing the compromised agent subset, kept separate
+        # from the global RNG so that partial-compromise cases do not desync the
+        # traffic sequence relative to the clean baseline.
+        _attack_rng = random.Random(traffic_seed)
+        # Dedicated RNG for the 'random' routing rule (damage-ceiling diagnostic),
+        # kept separate so it does not desync the paired traffic sequence.
+        _rule_rng = random.Random(traffic_seed + 999)
+
+        # Optional targeted link failures (damage-ceiling under failure). Snapshot
+        # the intact topology so each episode starts from a fresh graph before the
+        # target links are removed and the K-path caches rebuilt on the survivors.
+        _needs_failure = bool(n_link_failures or target_links)
+        _topo_snapshot = (
+            [(u, v, dict(d)) for u, v, d in env.engine.topology.graph.edges(data=True)]
+            if _needs_failure else None
+        )
+
         for _ in range(n_eps):
-            states = env.reset()
+            if _topo_snapshot is not None:
+                G = env.engine.topology.graph
+                G.remove_edges_from(list(G.edges()))
+                G.add_edges_from(_topo_snapshot)
+                env.engine.topology.refresh_path_cache()
+            env.engine.reset_with_load(offered_load_factor=offered_load_factor)
+            if _needs_failure:
+                self._inject_failures(env.engine, n_link_failures, target_links=target_links)
+                env.engine.topology.refresh_path_cache()
+            states = [env.engine.get_state(h) for h in hosts]
             ep_r = ep_sent = ep_dropped = ep_delivered = 0
+
+            # Determine which topology indices are compromised this episode.
+            # The set is fixed per-episode (an adversary who owns a node keeps
+            # access for the full episode, not just individual timesteps).
+            if attack and attack_fraction < 1.0 and trainable_indices is not None:
+                n_compromised = max(1, int(len(trainable_indices) * attack_fraction))
+                compromised_topo = set(_attack_rng.sample(trainable_indices, n_compromised))
+            else:
+                compromised_topo = None  # None → attack all eligible agents
+
             for _ in range(t_per_ep):
                 if attack:
+                    # Snapshot the clean observations before perturbation so the
+                    # action-flip diagnostic can compare clean vs adversarial
+                    # argmax path choices on the SAME step.
+                    _clean_states = list(states) if measure_flips else None
+                    # The critic-grounded attack needs the true central state and the
+                    # other agents' (block-onehot) actions as fixed context. Assemble
+                    # them once per timestep from the clean observations.
+                    critic_ctx = None
+                    if attack_type == 'critic_grounded' and trainable_indices is not None:
+                        critic_ctx = self._build_critic_attack_context(maddpg, env, states,
+                                                                       trainable_indices)
                     adv = []
                     for topo_idx, (host, s) in enumerate(zip(hosts, states)):
                         # Only attack trainable agents; non-trainable nodes have no actor
@@ -1614,17 +2232,47 @@ class StandaloneExperimentRunner:
                             adv.append(s)
                         elif targeted_tiers and env.engine.get_tier(host) not in targeted_tiers:
                             adv.append(s)
+                        elif compromised_topo is not None and topo_idx not in compromised_topo:
+                            adv.append(s)  # not compromised this episode
                         else:
                             agent_idx = topo_to_maddpg[topo_idx] if topo_to_maddpg else topo_idx
-                            adv.append(self.attack_framework.generate_adversarial_state(
-                                state=s,
-                                agent_network=maddpg.agents[agent_idx],
-                                network_engine=env.engine,
-                                agent_index=agent_idx,
-                            ))
+                            if critic_ctx is not None:
+                                adv.append(self.attack_framework.generate_adversarial_state_critic(
+                                    state=s,
+                                    maddpg=maddpg,
+                                    agent_index=agent_idx,
+                                    central_state=critic_ctx['central_state'],
+                                    clean_joint_onehot=critic_ctx['joint_onehot'],
+                                    block_size=critic_ctx['block_size'],
+                                ))
+                            else:
+                                adv.append(self.attack_framework.generate_adversarial_state(
+                                    state=s,
+                                    agent_network=maddpg.agents[agent_idx],
+                                    network_engine=env.engine,
+                                    agent_index=agent_idx,
+                                ))
                     states = adv
+                    if measure_flips and trainable_indices is not None:
+                        _K_flip = max(1, n_actions // _n_dest_flip)
+                        _cl = maddpg.choose_action([_clean_states[i] for i in trainable_indices])
+                        _av = maddpg.choose_action([adv[i] for i in trainable_indices])
+                        for _cv, _avv in zip(_cl, _av):
+                            _ca = np.asarray(_cv).reshape(_n_dest_flip, _K_flip).argmax(axis=1)
+                            _aa = np.asarray(_avv).reshape(_n_dest_flip, _K_flip).argmax(axis=1)
+                            _flip_changed += int((_ca != _aa).sum())
+                            _flip_total += _n_dest_flip
                 with torch.no_grad():
-                    if trainable_indices is not None:
+                    if routing_rule is not None and trainable_indices is not None:
+                        # Damage-ceiling diagnostic: bypass the policy and route by a
+                        # fixed rule (worst/best/sp/random) to bound the achievable
+                        # PDR envelope an observation-space attacker could ever reach.
+                        t_hosts = [hosts[i] for i in trainable_indices]
+                        t_actions = [self._rule_action(h, routing_rule, env.engine, _rule_rng)
+                                     for h in t_hosts]
+                        actions = self._build_full_actions(t_actions, n_total_hosts,
+                                                          trainable_indices, n_actions)
+                    elif trainable_indices is not None:
                         t_states = [states[i] for i in trainable_indices]
                         t_actions = maddpg.choose_action(t_states)
                         actions = self._build_full_actions(t_actions, n_total_hosts,
@@ -1656,10 +2304,16 @@ class StandaloneExperimentRunner:
             'mean_delay_p95': float(np.mean(ep_delay_p95)),
             'mean_backlog_end': float(np.mean(ep_backlog)),
             'mean_goodput_per_step': float(np.mean(ep_goodput)),
+            'p95_series':     [float(v) for v in ep_delay_p95],
+            'pdr_series':     [float(v) for v in ep_delivery],
+            'backlog_series': [float(v) for v in ep_backlog],
+            'action_flip_rate': float(_flip_changed / _flip_total) if _flip_total else None,
             'run_config': {
                 'attack': attack,
                 'attack_type': attack_type if attack else 'clean',
                 'epsilon': float(epsilon) if attack else 0.0,
+                'attack_fraction': float(attack_fraction) if attack else 1.0,
+                'offered_load_factor': float(offered_load_factor),
                 'targeted_tiers': targeted_tiers or [],
                 'evaluation_episodes': int(n_eps),
                 'timesteps_per_episode': int(t_per_ep),
@@ -1668,17 +2322,22 @@ class StandaloneExperimentRunner:
 
     def _attack_surface_analysis(self, maddpg: MADDPG, env: NetworkEnv,
                                   n_eps: int, t_per_ep: int,
-                                  epsilon: float = 0.10) -> Dict:
-        clean  = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
+                                  epsilon: float = 0.10,
+                                  offered_load_factor: float = 1.0) -> Dict:
+        clean  = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
+                                       offered_load_factor=offered_load_factor)
         core_r = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
                                        attack_type='packet_loss', epsilon=epsilon,
-                                       targeted_tiers=['core'])
+                                       targeted_tiers=['core'],
+                                       offered_load_factor=offered_load_factor)
         dist_r = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
                                        attack_type='packet_loss', epsilon=epsilon,
-                                       targeted_tiers=['dist'])
+                                       targeted_tiers=['dist'],
+                                       offered_load_factor=offered_load_factor)
         acc_r  = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
                                        attack_type='packet_loss', epsilon=epsilon,
-                                       targeted_tiers=['access'])
+                                       targeted_tiers=['access'],
+                                       offered_load_factor=offered_load_factor)
         return {
             'clean':           clean,
             'core_attacked': {
@@ -1789,7 +2448,7 @@ class StandaloneExperimentRunner:
             'attack_types': attack_type_summary,
         }
 
-    # â”€â”€ ranking helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── ranking helpers ─────────────────────────────────────────────────────
 
     def _score_profiles(self) -> Dict:
         cfg = self.config.get('scoring', {})
@@ -1982,7 +2641,7 @@ class StandaloneExperimentRunner:
 
         return out
 
-    # â”€â”€ seed expansion & rank stability â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── seed expansion & rank stability ─────────────────────────────────────
 
     @staticmethod
     def _kendall_tau_simple(rank1: List[str], rank2: List[str]) -> float:
@@ -2046,7 +2705,7 @@ class StandaloneExperimentRunner:
         tau = self._kendall_tau_simple(prev_names, curr_names)
         return float(max(0.0, tau))
 
-    # â”€â”€ plotting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── plotting ──────────────────────────────────────────────────────────────
 
     def _generate_plots_for_phase(self, phase: int):
         if not PLOTTING_AVAILABLE:
@@ -2075,7 +2734,7 @@ class StandaloneExperimentRunner:
         except Exception as exc:
             logger.error(f"[Plot] Phase {phase} plot generation failed: {exc}")
 
-    # â”€â”€ full pipeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── full pipeline ─────────────────────────────────────────────────────────
 
     def run_all(self):
         t0 = time.time()
@@ -2087,9 +2746,9 @@ class StandaloneExperimentRunner:
             'phase3': self._build_phase3_rankings(p3),
         }
         self._save(summary, 'experiment_summary_rankings.json')
-        logger.info(f"All phases done in {(time.time()-t0)/3600:.2f} h  â†’  {self.results_dir}")
+        logger.info(f"All phases done in {(time.time()-t0)/3600:.2f} h  →  {self.results_dir}")
 
-    # â”€â”€ persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── persistence ───────────────────────────────────────────────────────────
 
     def _save(self, obj, filename: str):
         path = os.path.join(self.results_dir, filename)
@@ -2108,10 +2767,10 @@ def main():
     ap.add_argument('--config',      default='experiment_config.json')
     ap.add_argument('--gpu',         type=int, default=0)
     ap.add_argument('--results-dir', default=None)
-    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2'], default='all')
+    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2', 'hotspot', 'failure', 'ceiling', 'fgsm_probe'], default='all')
     ap.add_argument('--quick', action='store_true')
     ap.add_argument('--smoke', action='store_true',
-                    help='Smoke-test mode: 80 epochs / 3 eps / 64 steps â€” enough to '
+                    help='Smoke-test mode: 80 epochs / 3 eps / 64 steps — enough to '
                          'verify reward signal and full pipeline without a full run')
     ap.add_argument('--variants', default=None,
                     help='Comma-separated list of variant names to train; '
@@ -2140,19 +2799,33 @@ def main():
             a['evaluation_episodes'] = 10
         runner.config.setdefault('paper1_eval', {})['evaluation_episodes'] = 10
         runner.config.setdefault('load_sweep', {})['offered_loads'] = [0.5, 0.75, 1.0, 1.3]
-        logger.info("Smoke mode active â€” 80 epochs / 3 eps / 64 steps")
+        logger.info("Smoke mode active — 80 epochs / 3 eps / 64 steps")
 
     if args.variants:
         allowed = {v.strip() for v in args.variants.split(',')}
         runner.config['variants'] = [
             v for v in runner.config['variants'] if v['name'] in allowed
         ]
-        logger.info("Variant filter active â€” training: %s", [v['name'] for v in runner.config['variants']])
+        logger.info("Variant filter active — training: %s", [v['name'] for v in runner.config['variants']])
 
-    if   args.phase == 'all':    runner.run_all()
-    elif args.phase == 'train':  runner.run_training()
-    elif args.phase == 'paper1': runner.evaluate_maddpg()
-    elif args.phase == 'paper2': runner.evaluate_fgsm()
+    if   args.phase == 'all':     runner.run_all()
+    elif args.phase == 'train':   runner.run_training()
+    elif args.phase == 'paper1':  runner.evaluate_maddpg()
+    elif args.phase == 'paper2':  runner.evaluate_fgsm()
+    elif args.phase == 'ceiling': runner.measure_damage_ceiling()
+    elif args.phase == 'fgsm_probe': runner.fgsm_probe()
+    elif args.phase == 'hotspot':
+        tr = runner._load('phase1_training_results.json')
+        t_per_ep = runner.config['training']['timesteps_per_episode']
+        n_eps = runner.config.get('paper1_eval', {}).get('evaluation_episodes', 20)
+        results = runner._run_hotspot_sweep(tr, n_eps, t_per_ep)
+        runner._save(results, 'phase2_hotspot_sweep_results.json')
+    elif args.phase == 'failure':
+        tr = runner._load('phase1_training_results.json')
+        t_per_ep = runner.config['training']['timesteps_per_episode']
+        n_eps = runner.config.get('paper1_eval', {}).get('evaluation_episodes', 20)
+        results = runner._run_failure_sweep(tr, n_eps, t_per_ep)
+        runner._save(results, 'phase2_failure_sweep_results.json')
 
 
 if __name__ == '__main__':

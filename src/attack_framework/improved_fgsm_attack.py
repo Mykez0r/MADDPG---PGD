@@ -30,6 +30,10 @@ class FGSMAttackFramework:
         """
         self.epsilon = epsilon
         self.attack_type = attack_type
+        # PGD controls: n_steps=1 → single-step FGSM (default); n_steps>1 runs
+        # projected gradient descent with per-step size step_alpha (0 → epsilon).
+        self.n_steps = 1
+        self.step_alpha = 0.0
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.attack_stats: Dict = {
             'clean_rewards': [],
@@ -59,6 +63,23 @@ class FGSMAttackFramework:
         Returns:
             Perturbed state as a 1-D numpy array.
         """
+        # Random-noise control: budget-matched L-inf perturbation with a RANDOM
+        # sign per feature and NO gradient information. Same epsilon and same
+        # domain clamping as the gradient attacks, so any effect isolates "does
+        # perturbation direction matter?" from "does jostling an off-optimal
+        # policy help?". Uses numpy RNG only (traffic is driven by Python's
+        # random module), so clean/attacked runs stay paired on the same traffic.
+        if self.attack_type == 'random':
+            adv = np.asarray(state, dtype=np.float32).copy()
+            signs = np.where(np.random.random(adv.shape) < 0.5, -1.0, 1.0).astype(np.float32)
+            adv = adv + self.epsilon * signs
+            if bandwidth_indices is not None:
+                adv[bandwidth_indices] = np.clip(adv[bandwidth_indices], 0.0, 1.0)
+            else:
+                k = min(4, adv.shape[0])
+                adv[:k] = np.clip(adv[:k], 0.0, 1.0)
+            return adv
+
         # Resolve specific agent if the MADDPG orchestrator was passed
         maddpg_ref = agent_network if hasattr(agent_network, 'agents') else None
         if hasattr(agent_network, 'agents'):
@@ -73,88 +94,208 @@ class FGSMAttackFramework:
         # Save original training state
         was_training = agent.actor.training
         
+        # PGD generalises FGSM. n_steps=1 (default) reproduces single-step FGSM
+        # exactly; n_steps>1 runs projected gradient descent inside the L-inf
+        # epsilon-ball around the original observation, taking per-step size
+        # step_alpha (defaults to epsilon, which is correct for the single step).
+        n_steps = max(1, int(getattr(self, 'n_steps', 1)))
+        step_alpha = float(getattr(self, 'step_alpha', 0.0)) or self.epsilon
+
+        def _actor_probs(cur):
+            """Forward the (possibly GNN-encoded) working state through the actor."""
+            current_state = cur
+            gnn_proc = getattr(maddpg_ref, 'gnn_processor', None)
+            if gnn_proc is not None and getattr(gnn_proc, 'available', False):
+                # Apply the GNN to a batch where every other agent slot holds a
+                # zero observation and only the target slot carries grad back to
+                # the working state; padded to the full node count if needed.
+                n_agents_gnn = gnn_proc.n_agents
+                obs_dim_gnn = gnn_proc.obs_dim
+                dummy = torch.zeros(n_agents_gnn, obs_dim_gnn, device=self.device)
+                adv_obs = cur.squeeze(0)[:obs_dim_gnn]
+                if adv_obs.shape[0] < obs_dim_gnn:
+                    adv_obs = torch.cat(
+                        [adv_obs,
+                         torch.zeros(obs_dim_gnn - adv_obs.shape[0], device=self.device)]
+                    )
+                batch = dummy.clone()
+                batch[agent_index % n_agents_gnn] = adv_obs
+                n_relay = getattr(gnn_proc, 'n_relay_nodes', 0)
+                if n_relay > 0:
+                    relay_pad = torch.zeros(n_relay, obs_dim_gnn, device=self.device)
+                    batch_full = torch.cat([batch, relay_pad], dim=0)
+                else:
+                    batch_full = batch
+                out = gnn_proc(batch_full, gnn_proc.edge_index)
+                current_state = out[agent_index % n_agents_gnn].unsqueeze(0)
+            return agent.actor(current_state)
+
+        def _objective(cur, probs):
+            if self.attack_type == 'packet_loss':
+                return self._packet_loss_objective(cur, probs, network_engine, agent_index)
+            elif self.attack_type == 'reward_minimize':
+                return self._reward_minimize_objective(cur, probs, network_engine, agent_index)
+            elif self.attack_type == 'confusion':
+                return self._confusion_objective(cur, probs, network_engine, agent_index)
+            raise ValueError(f'Unknown attack type: {self.attack_type}')
+
         try:
             # Force gradient computation (overrides any torch.no_grad context)
             with torch.enable_grad():
-                agent.actor.eval()  # Use eval mode for consistent attack (prevents BN/Dropout noise)
-                
-                # Handle GNN processing differentiably if the variant uses a GNN.
-                # GNN now lives on the MADDPG orchestrator and needs all agents'
-                # observations, but for adversarial input computation we only
-                # have access to the single target agent's state tensor.
-                # Strategy: apply GNN to a batch where all other agents receive
-                # their current (unperturbed) observations; only the target slot
-                # retains the grad_fn back through state_tensor.
-                current_state = state_tensor
-                gnn_proc = getattr(maddpg_ref, 'gnn_processor', None)
-                if gnn_proc is not None and getattr(gnn_proc, 'available', False):
-                    # Build a [n_agents, obs_dim] batch; target agent keeps grad
-                    n_agents_gnn = gnn_proc.n_agents
-                    obs_dim_gnn = gnn_proc.obs_dim
-                    dummy = torch.zeros(n_agents_gnn, obs_dim_gnn,
-                                        device=self.device)
-                    # Overwrite the target agent's slot with the attacked state
-                    # (trimmed/padded to obs_dim to handle shape mismatches)
-                    adv_obs = state_tensor.squeeze(0)[:obs_dim_gnn]
-                    if adv_obs.shape[0] < obs_dim_gnn:
-                        adv_obs = torch.cat(
-                            [adv_obs,
-                             torch.zeros(obs_dim_gnn - adv_obs.shape[0], device=self.device)]
-                        )
-                    batch = dummy.clone()
-                    batch[agent_index % n_agents_gnn] = adv_obs
-                    # Full-graph mode: pad relay (switch) nodes with zeros so the
-                    # edge_index referencing all n_total nodes doesn't crash.
-                    n_relay = getattr(gnn_proc, 'n_relay_nodes', 0)
-                    if n_relay > 0:
-                        relay_pad = torch.zeros(n_relay, obs_dim_gnn, device=self.device)
-                        batch_full = torch.cat([batch, relay_pad], dim=0)
-                    else:
-                        batch_full = batch
-                    out = gnn_proc(batch_full, gnn_proc.edge_index)  # [n_total, obs_dim]
-                    current_state = out[agent_index % n_agents_gnn].unsqueeze(0)
-                action_probs = agent.actor(current_state)
-
-                if self.attack_type == 'packet_loss':
-                    loss = self._packet_loss_objective(
-                        state_tensor, action_probs, network_engine, agent_index
-                    )
-                elif self.attack_type == 'reward_minimize':
-                    loss = self._reward_minimize_objective(
-                        state_tensor, action_probs, network_engine, agent_index
-                    )
-                elif self.attack_type == 'confusion':
-                    loss = self._confusion_objective(
-                        state_tensor, action_probs, network_engine, agent_index
-                    )
-                else:
-                    raise ValueError(f'Unknown attack type: {self.attack_type}')
-
-                # Zero any existing gradients before backward
-                if state_tensor.grad is not None:
-                    state_tensor.grad.zero_()
-                
-                loss.backward()
-
-                # Check if gradients were computed
-                if state_tensor.grad is None:
-                    raise RuntimeError("Gradients not computed. Gradient flow may be broken or model parameters are non-differentiable.")
-
-                perturbation = self.epsilon * torch.sign(state_tensor.grad.data)
-                adversarial_state = state_tensor + perturbation
-                adversarial_state = self._apply_domain_constraints(
-                    adversarial_state, bandwidth_indices
-                )
-                
-                return adversarial_state.detach().cpu().numpy()[0]
+                agent.actor.eval()  # eval mode → no BN/Dropout noise during the attack
+                orig = state_tensor.detach().clone()
+                adv = state_tensor  # requires_grad already set
+                for _step in range(n_steps):
+                    if adv.grad is not None:
+                        adv.grad.zero_()
+                    action_probs = _actor_probs(adv)
+                    loss = _objective(adv, action_probs)
+                    loss.backward()
+                    if adv.grad is None:
+                        raise RuntimeError("Gradients not computed. Gradient flow may be broken.")
+                    with torch.no_grad():
+                        adv = adv + step_alpha * torch.sign(adv.grad.data)
+                        # project the accumulated perturbation back into the L-inf ball
+                        adv = orig + torch.clamp(adv - orig, -self.epsilon, self.epsilon)
+                        adv = self._apply_domain_constraints(adv, bandwidth_indices)
+                    adv = adv.detach().requires_grad_(True)
+                return adv.detach().cpu().numpy()[0]
 
         except Exception as e:
-            logger.error(f'FGSM generation failed for agent {agent_index}: {str(e)}')
+            logger.error(f'FGSM/PGD generation failed for agent {agent_index}: {str(e)}')
             return state
         finally:
             # Restore original training state
             if was_training:
                 agent.actor.train()
+
+    # ------------------------------------------------------------------
+    # Critic-grounded attack
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _straight_through_block_onehot(a_soft: torch.Tensor, block_size: int) -> torch.Tensor:
+        """Per-block argmax one-hot with a straight-through gradient.
+
+        Forward pass is the hard one-hot (one path selected per K_PATHS block, as
+        the environment decodes routing); backward pass passes the gradient of the
+        soft actor output. Matches the block-projected actions the central critic
+        was trained on.
+        """
+        n = a_soft.shape[-1]
+        hard = torch.zeros_like(a_soft)
+        for bs in range(0, n, block_size):
+            be = min(bs + block_size, n)
+            idx = a_soft[:, bs:be].argmax(dim=1)
+            hard[torch.arange(a_soft.shape[0]), bs + idx] = 1.0
+        return (hard - a_soft).detach() + a_soft
+
+    def generate_adversarial_state_critic(
+        self,
+        state: np.ndarray,
+        maddpg,
+        agent_index: int,
+        central_state: np.ndarray,
+        clean_joint_onehot: np.ndarray,
+        block_size: int,
+        bandwidth_indices: Optional[List[int]] = None,
+    ) -> np.ndarray:
+        """Critic-grounded FGSM: perturb agent i's observation to minimise the
+        agent's own central critic value Q(s, a).
+
+        The true central state ``s`` and the other agents' (block-onehot) actions
+        are held fixed; only agent i's action a_i = π_i(o_i+δ) — projected with a
+        straight-through block one-hot — varies through the perturbation. The
+        gradient direction that most *decreases* Q is, by construction, the
+        direction the agent's own value model rates as most harmful, so (unlike the
+        congestion proxy) it cannot accidentally improve routing.
+        """
+        agent = maddpg.agents[agent_index]
+        device = agent.actor.device
+        was_training_a = agent.actor.training
+        was_training_c = agent.critic.training
+        try:
+            with torch.enable_grad():
+                agent.actor.eval()
+                agent.critic.eval()
+                s = torch.tensor(np.asarray(state, dtype=np.float32)[None, :],
+                                 device=device).requires_grad_(True)
+                cs = torch.tensor(np.asarray(central_state, dtype=np.float32)[None, :],
+                                  device=device)                         # fixed true state
+                joint = torch.tensor(np.asarray(clean_joint_onehot, dtype=np.float32),
+                                     device=device)                      # [n_agents, n_actions]
+
+                a_soft = agent.actor(s)                                   # [1, n_actions]
+                a_st = self._straight_through_block_onehot(a_soft, block_size)
+                joint_b = joint.clone()
+                joint_b[agent_index] = a_st.squeeze(0)
+                joint_flat = joint_b.view(1, -1)                         # [1, n_agents*n_actions]
+
+                q = agent.critic(cs, joint_flat)                        # [1, 1]
+                # Ascend (-Q) ⇒ descend Q: steer toward the lowest-value action.
+                loss = -q.sum()
+
+                if s.grad is not None:
+                    s.grad.zero_()
+                loss.backward()
+                if s.grad is None:
+                    raise RuntimeError("Critic-grounded attack produced no gradient.")
+
+                perturbation = self.epsilon * torch.sign(s.grad.data)
+                adv = self._apply_domain_constraints(s + perturbation, bandwidth_indices)
+                return adv.detach().cpu().numpy()[0]
+        except Exception as e:
+            logger.error(f'Critic-grounded FGSM failed for agent {agent_index}: {str(e)}')
+            return state
+        finally:
+            if was_training_a:
+                agent.actor.train()
+            if was_training_c:
+                agent.critic.train()
+
+    # ------------------------------------------------------------------
+    # Action-aligned congestion signal
+    # ------------------------------------------------------------------
+    def _per_action_util(
+        self,
+        state: torch.Tensor,
+        action_probs: torch.Tensor,
+        network_engine,
+    ) -> Optional[torch.Tensor]:
+        """Extract the per-action k-path bottleneck utilisation from the observation.
+
+        The observation contains an n_dest × K_PATHS block of path bottleneck
+        utilisations laid out in the *same order as the action matrix* (for each
+        destination d, K_PATHS consecutive slots). Action i therefore selects the
+        path whose congestion is slot i of this block — a 1:1, environment-grounded
+        congestion signal. (The previous implementation cycled action index over
+        neighbour bandwidth via ``i % num_neighbors``, which mapped congestion to
+        the wrong actions and produced near-random gradients.)
+
+        Returns a detached (1, L) tensor of utilisations aligned to the first L
+        actions, or None if the layout cannot be resolved.
+        """
+        n_dest = getattr(network_engine, 'n_destinations', None)
+        max_neighbors = getattr(network_engine, 'max_neighbors', None)
+        if n_dest is None or max_neighbors is None or n_dest == 0:
+            return None
+        num_actions = action_probs.shape[-1]
+        k_paths = max(1, num_actions // n_dest)
+        block_w = n_dest * k_paths
+        # Layout: [mn bw | 3 queue | n_dest dest-indicator | 3 link-stats | k-path utils | mean-hops]
+        util_start = max_neighbors + n_dest + 6
+        if util_start >= state.shape[-1]:
+            return None
+        # The observation is truncated to state_dims, which drops the final K_PATHS
+        # constructed slots (mean-hops + the last destination's last two path utils),
+        # so the retained k-path block is K*(n_dest-1)+1 slots — action-aligned for
+        # the first L actions. Clamp to whatever is present rather than bail.
+        util_end = min(util_start + block_w, state.shape[-1])
+        # Detach: the congestion target is fixed by the *true* current state; the
+        # attack should only differentiate through the policy (action_probs), not
+        # inflate the utilisation features themselves.
+        util = state[:, util_start:util_end].detach()
+        L = min(util.shape[-1], num_actions)
+        return util[:, :L]
 
     # ------------------------------------------------------------------
     # Attack objectives
@@ -166,27 +307,22 @@ class FGSMAttackFramework:
         network_engine,
         agent_index: int,
     ) -> torch.Tensor:
-        """Encourage congested-path selection to maximise packet loss."""
-        num_neighbors = network_engine.get_number_neighbors(
-            network_engine.get_all_hosts()[agent_index]
-        )
-        if num_neighbors == 0:
-            # Return zero loss that is still connected to the graph to avoid grad errors
+        """Encourage congested-path selection to maximise packet loss.
+
+        Weights each action by a sharpened (sigmoid) function of its true k-path
+        bottleneck utilisation, then rewards placing probability mass on the most
+        congested paths. Gradient ascent perturbs the observation so the policy
+        prefers congested paths.
+        """
+        util = self._per_action_util(state, action_probs, network_engine)
+        if util is None:
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
-
-        num_actions = action_probs.shape[-1]  # n_dest × K_PATHS (e.g. 63 = 21 × 3)
-        bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
-
-    # Build per-action congestion weight by cycling over neighbor bandwidths.
-    # Action i is associated with the link to neighbor (i % num_neighbors).
-    # This maps each pre-computed path to its first-hop link congestion.
-        neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
-        per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
-    
-    # High congestion (low bandwidth) → high weight → push agent toward congested paths
-        congestion_weights = torch.sigmoid((1.0 - per_action_bw) * 10.0)
-        congestion_loss = torch.sum(action_probs * congestion_weights)
-        return -congestion_loss  # maximise congestion selection
+        L = util.shape[-1]
+        probs = action_probs[:, :L]
+        # High utilisation → weight ≈ 1 (congested); low utilisation → weight ≈ 0.
+        congestion_weights = torch.sigmoid((util - 0.5) * 10.0)
+        congestion_loss = torch.sum(probs * congestion_weights)
+        return congestion_loss  # gradient ascent maximises congestion-path selection
 
     def _reward_minimize_objective(
         self,
@@ -195,27 +331,20 @@ class FGSMAttackFramework:
         network_engine,
         agent_index: int,
     ) -> torch.Tensor:
-        """Minimise expected routing quality by pushing toward low-bandwidth action choices.
+        """Minimise expected routing quality (a smooth, linear reward proxy).
 
-        Uses the same bandwidth-aware setup as _packet_loss_objective but minimises the
-        expected bandwidth utility directly (a differentiable reward proxy), rather than
-        using uniform weights whose gradient is identically zero.
+        Routing quality is high when chosen paths have low utilisation, so the
+        expected utilisation Σ π(a)·util(a) is a differentiable proxy for *negative*
+        reward. Gradient ascent maximises expected utilisation, steering the policy
+        toward worse (more saturated) paths.
         """
-        num_neighbors = network_engine.get_number_neighbors(
-            network_engine.get_all_hosts()[agent_index]
-        )
-        if num_neighbors == 0:
+        util = self._per_action_util(state, action_probs, network_engine)
+        if util is None:
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
-
-        num_actions = action_probs.shape[-1]
-        bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
-        neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
-        per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
-
-        # Negate expected bandwidth so FGSM (gradient ascent) minimises it —
-        # this deceives the agent into believing low-BW (bad) paths are attractive.
-        expected_bw = torch.sum(action_probs * per_action_bw)
-        return -expected_bw  # gradient pushes agent toward low-bandwidth (bad) paths
+        L = util.shape[-1]
+        probs = action_probs[:, :L]
+        expected_util = torch.sum(probs * util)
+        return expected_util  # gradient ascent maximises expected path utilisation
 
     def _confusion_objective(
         self,
@@ -224,29 +353,23 @@ class FGSMAttackFramework:
         network_engine,
         agent_index: int,
     ) -> torch.Tensor:
-        """Targeted misrouting: cross-entropy toward the most-congested (worst) action.
+        """Targeted misrouting toward the single most-congested action.
 
-        Unlike entropy maximisation — which can inadvertently produce load-balancing and
-        improve performance — this forces the agent to assign maximum probability to the
-        single action that routes traffic through the most congested link.
+        Identifies the worst action (highest k-path bottleneck utilisation) from the
+        true current state and maximises the policy's probability of selecting it.
+        Unlike entropy maximisation — which can inadvertently load-balance and improve
+        performance — this concentrates traffic on the single most saturated path.
         """
-        num_neighbors = network_engine.get_number_neighbors(
-            network_engine.get_all_hosts()[agent_index]
-        )
-        if num_neighbors == 0:
+        util = self._per_action_util(state, action_probs, network_engine)
+        if util is None:
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
-
-        num_actions = action_probs.shape[-1]
-        bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
-        neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
-        per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
-
-        # Most-congested action = lowest bandwidth among first-hop links.
-        worst_action = per_action_bw.argmin(dim=-1).detach()  # shape: (1,)
-        worst_prob = action_probs.gather(1, worst_action.unsqueeze(1))  # shape: (1, 1)
-
-        # Maximise probability of worst action (minimise negative log-likelihood).
-        return -torch.log(worst_prob + 1e-8).mean()
+        L = util.shape[-1]
+        probs = action_probs[:, :L]
+        # Worst action = highest path utilisation (most congested).
+        worst_action = util.argmax(dim=-1).detach()  # shape: (1,)
+        worst_prob = probs.gather(1, worst_action.unsqueeze(1))  # shape: (1, 1)
+        # Gradient ascent on log(P(worst)) maximises the probability of the worst action.
+        return torch.log(worst_prob + 1e-8).mean()
 
     # ------------------------------------------------------------------
     # Domain constraints
