@@ -1,0 +1,653 @@
+\documentclass[10pt,journal,comsoc]{IEEEtran}
+\usepackage{amsmath,amsfonts}
+\usepackage{algorithm}
+\usepackage{array}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{textcomp}
+\usepackage{stfloats}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{float}
+\usepackage{cite}
+\usepackage{color}
+\usepackage{multicol}
+\usepackage{multirow}
+\usepackage{epsfig}
+\usepackage{epstopdf}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{mathtools}
+\newtheorem{definition}{Definition}
+\usepackage{makecell}
+\usepackage{algpseudocode}
+\usepackage{tabularx}
+% Result figures (F1..F11) are written by tools/plot_paper1.py to:
+%   host_data/results/reward_fix/figures/
+\graphicspath{{./Figures/}{../host_data/results/reward_fix/figures/}}
+\renewcommand{\arraystretch}{1.2}
+\hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
+\setlength{\emergencystretch}{1em}
+\hbadness=10000
+\vbadness=10000
+\hfuzz=50pt
+\vfuzz=50pt
+
+\begin{document}
+
+\title{Centralised or Local Critic? Mechanism-Grounded Selection of MADDPG Architectures for Adaptive Routing}
+
+\author{
+  Pedro Amaral,~\IEEEmembership{Member,~IEEE,}%
+  \thanks{Pedro Amaral is with the Departamento de Engenharia Electrot\'ecnica e de Computadores, Faculdade de Ci\^encias e Tecnologia,
+  FCT/UNL, Universidade Nova de Lisboa, 2829-516 Caparica, Portugal; and Instituto de Telecomunica\c{c}\~oes, 1049-001 Lisbon, Portugal (e-mail: pfa@fct.unl.pt)}%
+  \\
+  Diogo Raimundo%
+  \thanks{Diogo Raimundo is with the Departamento de Engenharia Electrot\'ecnica e de Computadores,\\ Faculdade de Ci\^encias e Tecnologia, FCT/UNL, Universidade Nova de Lisboa,\\ 2829-516 Caparica, Portugal (e-mail: \{d.raimundo\}@campus.fct.unl.pt)}
+}
+
+\markboth{IEEE Transactions on Network and Service Management}%
+{Amaral and Raimundo: Multi-Agent Deep Reinforcement Learning for Adaptive Routing}
+
+\maketitle
+
+\begin{abstract}
+Deep Reinforcement Learning (DRL) has been proposed for learning adaptive routing policies directly from network interaction, but reported gains are often measured only against shortest-path forwarding, on the topology used for training, and with the training operating point left uncalibrated. This paper presents a comparative study of Multi-Agent Deep Deterministic Policy Gradient (MADDPG) routing variants that differ in two design axes: the \emph{critic domain} (centralised vs.\ local) and the use of a Graph Neural Network (GNN) state encoder. Seven variants are trained \emph{at their intended stress operating point} (concentrated CDN-style demand at $2\times$ nominal load) on a realistic 86-node service-provider topology, and evaluated against a deliberately demanding baseline set: an equivalent shortest-path control plane (EVPN-SP), \emph{uniform random path spreading}, and a \emph{greedy least-utilised-path} heuristic evaluated on traffic-paired episodes. Under concentrated demand the centralised critic dominates at every offered load, exceeding EVPN-SP by $4.5$ to $15.1$ percentage points (pp) of delivery, and beats its local-critic counterpart in every matched comparison; the mechanism is a consistent trade of longer paths for wider load spread. The baselines expose an honest frontier: random spreading delivers ${\sim}3$\,pp more than the best learned policy (paired $p<10^{-6}$), while the learned policy attains significantly lower tail latency (unanimous across paired episodes) --- and the gap to the greedy heuristic quantifies unclaimed adaptivity headroom that grows with load. Under out-of-distribution random link failures the picture inverts sharply: the learned policy, trained only on the intact topology, degrades gracefully ($-10$\,pp at eight failed links) while random spreading collapses ($-81$\,pp), overturning the expectation that learned routing is brittle to topology change. GNN encoding costs delivery on the intact topology across every architecture tested and, for most, provides no failure robustness either --- though the effect under failure is architecture-dependent, with one exception showing a genuine gain --- while a training-regime ablation shows that operating-point calibration and reward-weight correction contribute comparable, and larger, delivery improvements, at a bounded cost of only $0.4$ to $4.0$\,pp at nominal uniform load. These findings give concrete, mechanism-grounded guidance for selecting and training MADDPG routing architectures.
+\end{abstract}
+\IEEEpubidadjcol
+\begin{IEEEkeywords}
+  Deep reinforcement learning; multi-agent systems; adaptive routing; multi-agent deep deterministic policy gradient (MADDPG); graph neural networks (GNN); network optimisation
+\end{IEEEkeywords}
+
+\section{Introduction}
+The increasing complexity of communication networks has created significant challenges for routing systems. Traditional link-state protocols based on shortest-path routing rely on well-defined algorithms that ensure stability and prevent routing loops. While these protocols are effective at path discovery and adapt quickly to topology changes, they do not distribute traffic optimally, which leads to congestion and under-utilisation of link capacity~\cite{he2023routing,xiao2021leveraging}. Furthermore, finding optimal link weights for shortest-path routing under constraints is computationally intractable (NP-hard)~\cite{kodialam2022network}, which makes global traffic optimisation difficult.
+
+Deep Reinforcement Learning (DRL) has been proposed as a promising approach to address these limitations by learning adaptive routing policies directly from interaction with the network~\cite{abrol2024deep}. DRL-based routing does not require a predefined model of the network behaviour, allowing agents to learn and continuously improve their policies by interacting with a dynamic environment~\cite{he2023routing,casas2020intelligent}.
+
+However, there are still challenges to overcome in three critical dimensions: scalability, as the state and action spaces can grow exponentially with network size~\cite{xiao2021leveraging,liu2023scalable}; resilience to failures, where topological changes require rapid policy adaptation~\cite{liu2023scalable,rao2024dar,bhavanasi2022routing}; and generalisation, as models trained on one topology often fail to transfer knowledge to different network configurations~\cite{he2023routing,bhavanasi2022routing}.
+
+Multi-Agent Deep Deterministic Policy Gradient (MADDPG) algorithms have been proposed to address scalability challenges by using multiple agents to learn and make routing decisions in a distributed manner. With each agent responsible for a portion of the network, the state and action space for each individual agent is reduced, accelerating convergence and improving system robustness to local failures~\cite{bhavanasi2022routing,geng2020multi,li2022applications}. However, coordination between agents remains a critical challenge, as inconsistent decisions can result in suboptimal or unstable routes~\cite{feriani2021single,ding2024multi}.
+
+Graph Neural Networks (GNNs) have been proposed as a solution to enhance generalisation capabilities in the presence of topological changes. GNNs explicitly model the relationships between network nodes and links, enabling DRL agents to learn topology-invariant representations that facilitate knowledge transfer to new network configurations~\cite{bhavanasi2022routing,he2023routing,li2022applications}. This characteristic is particularly valuable in dynamic and large-scale environments where network topologies evolve over time due to equipment failures, capacity upgrades, or manual reconfigurations~\cite{almasan2022deep}.
+
+Beyond the choice of architecture, two methodological weaknesses recur in the DRL-routing literature. First, learned policies are usually compared \emph{only} against shortest-path forwarding, although far simpler stochastic strategies --- uniform random spreading over pre-computed path sets --- are strong load balancers on capacity-rich topologies; a policy that beats shortest path but loses to blind randomisation has learned little that is operationally valuable. Second, models are commonly trained at a nominal operating point and then celebrated (or condemned) at a different one, conflating architectural merit with training-regime miscalibration. This paper addresses both: every learned variant is trained \emph{at} the stress regime where adaptive routing is claimed to matter, and evaluated against a baseline set that includes random spreading and a greedy least-utilised-path heuristic on traffic-paired episodes, so that both the value and the remaining headroom of learning are measured honestly.
+
+Our study examines seven architectural variants built from two critic domains (centralised and local) and two value-head designs (simple and duelling Q-networks), each evaluated with and without GNN integration, on a realistic 86-node service-provider topology with a provider-edge, $K$-shortest-path forwarding model (e.g.\ EVPN). Performance is assessed under offered-load scaling of concentrated (hotspot) demand, under randomised multi-link failures of increasing severity, and in targeted dual-link failure scenarios, using packet delivery, tail latency, path length, and link-utilisation statistics.
+
+The contributions of this work are fourfold. First, we provide a systematic comparison of centralised and local critic architectures within the MADDPG framework and show that, once training is performed at the intended stress operating point, the centralised critic dominates: it beats the equivalent shortest-path control plane at \emph{every} offered load under concentrated demand and wins every matched centralised-vs-local comparison, through a mechanism (longer paths, wider load spread) that is directly measurable in the forwarding statistics. Second, we introduce an honest baseline methodology for learned routing --- random path spreading and a greedy least-utilised-path heuristic evaluated on traffic-paired episodes --- and use it to locate the learned policy on a delivery/latency frontier and to quantify the adaptivity headroom that remains unclaimed. Third, we test the common claim that learned routing is brittle to topology change with a randomised link-failure severity sweep: the policy trained on the intact topology degrades gracefully while random spreading collapses, inverting the delivery ranking precisely when robustness matters. Fourth, we quantify the impact of GNN-based state preprocessing and of training-regime calibration: the GNN encoder costs delivery on the intact topology across every architecture tested, and remains a net cost under failure for most but not all of them, revealing that its effect is architecture-dependent rather than uniformly negative; training-regime and reward-weight calibration, by contrast, each contribute several points of delivery, and the resulting stress-trained architecture costs only a small, bounded amount of delivery at nominal load.
+
+The rest of this paper is organised as follows. Section~\ref{State_of_Art} reviews the state of the art. Section~\ref{model} defines the multi-agent MDP formulation. Section~\ref{sec:maddpg} describes the MADDPG learning model, GNN integration, and the architectural variants. Section~\ref{expSetup} details the experimental setup, baselines, and statistical methodology. Section~\ref{sec:results} presents and analyses the results. Section~\ref{conclusion} concludes the paper.
+
+\section{State of the Art} \label{State_of_Art}
+\subsection{DRL for routing optimality}
+Deep Reinforcement Learning has emerged as a promising approach to address the limitations of traditional routing protocols in communication networks. DRL has been applied in several traffic engineering applications, such as routing, congestion control, and resource management~\cite{xiao2021leveraging,prakash2023survey}. Early DRL routing approaches typically adopt a single centralised agent that maps observed traffic matrices to link weights or splitting ratios~\cite{stampa2017deep}. In subsequent works multi-variate utility functions are used to balance multiple performance metrics, such as delay, packet loss, and throughput~\cite{xiao2021leveraging,yu2018drom}, and either the training procedure or the neural architecture are refined. In~\cite{xu2018experience}, TE-aware exploration and prioritised replay are added to Deep Deterministic Policy Gradient (DDPG) for split-ratio optimisation, achieving improved utility and robustness, and in~\cite{8780950} CNNs or RNNs are added on top of DDPG to exploit spatial or temporal structure in traffic matrices. More recent advances continue to enhance single-agent DRL routing by introducing novel neural architectures and more fine-grained control mechanisms. The work in~\cite{huang2024intelligent} proposes an intelligent routing algorithm over SDN that combines a Deep Q-Network (DQN) with prioritised experience replay and loop-free path exploration techniques, thereby improving policy re-usability and route optimality under dynamic traffic conditions. DAR-DRL that is proposed in~\cite{rao2024dar}, integrates a local-aware graph neural network with an Actor-Critic DRL agent to enable scalable, hop-by-hop adaptive routing.
+
+These single-agent DRL routing methods demonstrate that data-driven policies can outperform shortest-path and heuristic TE schemes. However, single-agent DRL approaches face significant scalability challenges as state and action spaces grow exponentially with the network size. The centralised nature of single-agent methods creates bottlenecks in collecting distributed network status and computing routing decisions in real-time, making them impractical for large-scale networks~\cite{feriani2021single,geng2020multi,guo2024distributed}.
+
+\subsection{Multi-agent DRL for scalable, partially observable routing}
+To address the scalability limitations of single-agent approaches, recent work formulates routing and traffic engineering as multi-agent reinforcement learning (MARL), where routers or regions act as agents with local observations. MARL algorithms distribute the learning and decision-making process across multiple agents, each responsible for a portion of the network, thereby reducing individual agent state and action spaces and accelerating convergence~\cite{xiao2021leveraging,feriani2021single}.
+
+The Multi-Agent Deep Deterministic Policy Gradient (MADDPG) algorithm has become a foundational approach for cooperative multi-agent systems in continuous action spaces. MADDPG addresses the non-stationarity problem inherent in multi-agent environments by adopting a Centralised Training with Decentralised Execution (CTDE) framework. During training, a centralised critic has access to observations and actions of all agents to facilitate coordination, while during execution, actors make decisions based only on local observations. In~\cite{geng2020multi} the authors propose a distributed traffic engineering framework for multi-region networks using specialised T-agents and O-agents to control, respectively, terminal and outgoing traffic. In~\cite{tong2023intelligent} an MADDPG algorithm organises routing agents in SDN so that each has its own actor network for every traffic type and shares a single local critic, enabling scalable multitask learning and adaptive routing decisions with decentralised value estimation.
+
+Such works demonstrate that multi-agent approaches can achieve optimal policies faster than single-agent counterparts. However, the centralised training phase in MADDPG-based approaches can still face scalability issues as the joint action space grows exponentially with the number of agents. Alternative approaches have explored fully decentralised training frameworks where agents communicate only with their neighbours over network topologies, though these require additional communication protocols and may converge more slowly~\cite{feriani2021single,wang2024scheduling,li2022applications,zhao2020improving,kuang2025rs}.
+
+\subsection{Centrality of the critic network}
+The existing works typically fix one specific critic architecture, either a fully centralised critic shared by all agents (CTDE) or fully local critics with no global state, and they do not systematically compare different degrees of critic centralisation under the same algorithmic family and environment. The choice between centralised and local critic architectures represents a fundamental trade-off in MARL design. Centralised critics provide global coordination signals but may not scale well, while local critics improve scalability at the potential cost of coordination quality~\cite{lyu2023centralized,lyu2021contrasting}. The effectiveness of each approach depends heavily on the specific network structure and traffic patterns. This trade-off has not been systematically studied in the context of DRL-based routing algorithms. This motivates the comparative study in this paper, which explicitly varies the degree of critic centralisation within a MADDPG-style architecture.
+
+\subsection{Graph Neural Networks for Network Routing Generalisation}
+A critical limitation of DRL-based routing is the difficulty in generalising to network topologies unseen during training. Graph Neural Networks (GNNs) have emerged as a powerful solution to enhance generalisation capabilities across different network configurations~\cite{he2023routing,xiao2021leveraging}. In~\cite{bhavanasi2022routing} an early and influential example at the routing layer is presented. The authors propose a single-agent Graph Convolutional Network (GCN)-based policy (SA-GCN) that takes as input the adjacency matrix and flow descriptors and outputs routing decisions, demonstrating stronger generalisation to new topologies and faster convergence than Q-routing baselines; in parallel, they present a multi-agent DQN (MA-DQN) where each node runs a local DQN without GNNs. Their results show that GCN-based policies can generalise across topologies and that multi-agent DQN scales to larger networks, but the GNN and the multi-agent components are studied in separate algorithms rather than jointly. In~\cite{bernardez2023magnneto}, a GNN is used in a Multi-Agent Reinforcement Learning framework, with agents sharing topology-aware embeddings and adjusting local routing to approximate an optimal solver. The related work in~\cite{bernardez2021machine} critically evaluates both traditional TE optimisers and ML-based approaches, concluding that GNNs are crucial to achieve cross-topology generalisation but that most ML systems remain fragile under distribution shifts and require careful design. Recent work has also explored attention mechanisms within GNN architectures to model dynamic relationships between network components. Graph Attention Multi-agent Reinforcement Learning frameworks leverage attention weights to selectively aggregate information from neighbouring nodes, improving routing decisions in dynamic network environments~\cite{li2023gappo,ma2024routing}.
+
+Despite these advances, GNN integration introduces additional computational overhead during training, particularly for large network topologies~\cite{ma2024routing}. Moreover, a recurring but often untested assumption is that the topology-awareness of a GNN automatically translates into robustness to topology \emph{change} at inference time; a related assumption is that policies \emph{without} such encoders must be brittle to failures because they were trained on a different (intact) graph~\cite{bhavanasi2022routing,bernardez2021machine}. We test both assumptions directly in Section~\ref{sec:results}.
+
+\begin{table*}[htbp]
+  \centering
+  \caption{Overview of DRL- and MARL-based Routing and Traffic Engineering Approaches}
+  \label{tab:soa_overview}
+  \begin{tabular}{|p{2.2cm}|p{2.1cm}|p{1.4cm}|p{1.9cm}|p{1.9cm}|p{1.5cm}|p{2.1cm}|}
+    \hline
+    \textbf{Reference} & \textbf{Setting} & \textbf{Agent type} & \textbf{DRL algorithm} & \textbf{Critic centrality} & \textbf{GNN} & \textbf{Control/output} \\
+    \hline
+    Stampa et al.~\cite{stampa2017deep} & Intra-domain SDN TE & Single & DQN-style DRL & Centralised value & No & Link weights \\
+    \hline
+    Yu et al.~\cite{yu2018drom} & SDN routing & Single & DQN & Centralised value & No & Split ratios \\
+    \hline
+    Xu et al.~\cite{xu2018experience} & WAN TE & Single & DDPG + PER & Centralised critic & No & Split ratios \\
+    \hline
+    Sun et al.~\cite{8780950} & SDN routing & Single & DDPG + RNN/CNN & Centralised critic & No & Routing policy \\
+    \hline
+    Huang et al.~\cite{huang2024intelligent} & SDN routing & Single & Dueling DQN + PER & Centralised value & No & Path selection \\
+    \hline
+    Rao et al.~\cite{rao2024dar} & IP routing & Single & Actor--Critic & Local critic & Local GNN & Next hop \\
+    \hline
+    Geng et al.~\cite{geng2020multi} & Distributed TE (multi-region) & Multi & MARL (policy gradient) & Centralised (CTDE) & No & Region-level traffic split \\
+    \hline
+    Tong et al.~\cite{tong2023intelligent} & SDN online routing & Multi & MADDPG & Shared local critic & No & Per-flow routing decisions \\
+    \hline
+    Zhao et al.~\cite{zhao2020improving} & Inter-domain routing & Multi & MARL & Fully decentralised & No & BGP-like routing decisions \\
+    \hline
+    Wang et al.~\cite{wang2024scheduling} & Wireless real-time flows & Multi & Centralised vs decentralised RL & Centralised vs local critic & No & Scheduling / routing of flows \\
+    \hline
+    Kuang et al.~\cite{kuang2025rs} & QoS-differentiated routing & Multi & MADDPG & Centralised critic & No & Routing strategy per QoS class \\
+    \hline
+    Bhavanasi et al.~\cite{bhavanasi2022routing} & Routing (various topologies) & Single / Multi & GCN policy, MA-DQN & Centralised (SA-GCN), local (MA-DQN) & GCN (SA only) & Next-hop / path decisions \\
+    \hline
+    He et al.~\cite{he2023routing} & KDN routing & Single & DRL + GNN & Centralised critic & GNN & Link weights / paths \\
+    \hline
+    Almasan et al.~\cite{almasan2022deep} & TE / routing & Single & DRL & Centralised critic & GNN & TE decisions (load balancing) \\
+    \hline
+    Bern\'ardez et al.~\cite{bernardez2023magnneto} & TE, multi-topology & Multi & MARL & Centralised training & GNN & Local routing close to optimal solver \\
+    \hline
+    Li et al.~\cite{li2023gappo} & Robust routing & Multi & Actor--Critic (GAPPO) & Centralised critic & GAT & Next-hop \\
+    \hline
+    Ma et al.~\cite{ma2024routing} & Computing power network & Single & DRL + GNN & Centralised critic & GNN & Joint routing / resource allocation \\
+    \hline
+    Liu et al.~\cite{liu2023scalable} & Online routing, multi-type services & Single & DRL & Centralised critic & No & Path / resource selection \\
+    \hline
+    Guo et al.~\cite{guo2024distributed} & Hybrid SDN TE & Multi & MARL & Centralised critic & No & Intra-domain TE decisions \\
+    \hline
+  \end{tabular}
+\end{table*}
+
+Table~\ref{tab:soa_overview} synthesises the surveyed DRL and MARL routing approaches, showing that most routing-oriented methods either rely on single centralised agents without explicit multi-agent coordination or on MARL schemes with predominantly centralised critics and limited integration of graph neural networks, while GNNs are mainly exploited in single-agent or prediction-oriented settings rather than in MARL schemes with varied critic centralisation architectures. Across the surveyed works, evaluation baselines are almost exclusively shortest-path or heuristic TE schemes; none reports a randomised path-spreading control or an informed greedy per-step heuristic on paired traffic, which are central to the methodology of this paper.
+
+\subsection{Positioning of this work}
+While existing research has made significant progress in applying DRL and MARL to routing optimisation, several gaps remain. (i)~\emph{Systematic evaluation of critic architectures:} MADDPG-based routing studies rarely compare degrees of critic centralisation under a fixed algorithmic family and environment; most adopt a centralised critic without investigating the trade-off. (ii)~\emph{GNN integration impact:} it remains unclear whether GNN state preprocessing alters the performance hierarchy between centralised and local critics, and whether its purported topology-awareness yields robustness to failures. (iii)~\emph{Honest baselines:} learned policies are compared against shortest path but not against uninformed randomisation or informed greedy heuristics, leaving both the true value and the remaining headroom of learning unquantified. (iv)~\emph{Resilience under topological change:} the claim that learned policies trained on one topology degrade badly when links fail is widely repeated but rarely tested with randomised, severity-controlled failures. (v)~\emph{Training-regime calibration:} the operating point at which the policy is trained is rarely matched to the regime where adaptivity is claimed to pay off. Our work addresses these gaps with a controlled comparison on a realistic service-provider topology, with stress-calibrated training, paired-traffic baselines, and randomised failure-severity evaluation.
+
+\section{Multi-Agent Markov Decision Process Formulation} \label{model}
+
+\begin{table}[!t]
+  \centering
+  \caption{Notation for Multi-Agent MDP Formulation}
+  \label{tab:mamdp_notation}
+  \begin{tabular}{cl}
+    \toprule
+    \textbf{Symbol} & \textbf{Description} \\
+    \midrule
+    $\mathcal{S}$ & State space \\
+    $\mathcal{A}$ & Joint action space \\
+    $\mathcal{P},\mathcal{R},\gamma$ & Transition, reward, discount factor \\
+    $N$ & Number of learning agents (PE switches) \\
+    $i$ & Agent index \\
+    \midrule
+    $s_i^{\text{local}}$ & Local state observed by agent $i$ \\
+    $s^{\text{central}}$ & Compact central state (global view) \\
+    $\mathbf{b}_i$ & Available bandwidth on links adjacent to $i$ \\
+    $\mathcal{N}_i$ & Neighbours of node $i$ \\
+    $\mathcal{D}_{\text{acc}}$ & Set of access (endpoint) destinations \\
+    $u_{i,d,k}$ & Bottleneck utilisation of path $k$ to destination $d$ \\
+    $\mathbf{B}$ & Global available-bandwidth vector on all links \\
+    $\mathbf{D}$ & Per-agent modal-destination vector \\
+    $\mathcal{E}$ & Set of links \\
+    $K$ & Number of pre-computed paths per OD pair \\
+    $a_{i,d}$ & Path index chosen by agent $i$ for destination $d$ \\
+    \midrule
+    $D_t, L_t$ & Step delivery and loss fractions \\
+    $\bar{u}_t$, $u_{e,t}$ & Mean and per-link utilisation at step $t$ \\
+    $w_D,w_L,w_U,w_V$ & Shared-reward weights \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The network routing problem is formulated as a multi-agent Markov Decision Process (MDP) defined by $\langle \mathcal{S}, \mathcal{A}, \mathcal{P}, \mathcal{R}, \gamma \rangle$. The routing model is a provider-edge (PE), label-switched abstraction: traffic endpoints (base stations, MEC servers, and content servers) are single-homed sources/sinks; the distribution-tier switches to which they attach act as \emph{ingress PE agents} that select an end-to-end path class per destination; and core switches transit packets along the selected path. Only the $N$ PE switches are learning agents, which keeps the agent count, and hence the joint action space, small and independent of the number of forwarding nodes.
+
+\subsection{State Space}
+Two state representations are used: a local state observed by every actor, and a compact central state used only by the centralised critic during training.
+
+\begin{definition}[Local state]
+  \label{local_state}
+  For agent $i$,
+  \[
+    s_i^{\text{local}} = \big\langle \mathbf{b}_i,\; q_i,\; \mathbf{p}_i,\; \mathbf{m}_i,\; \mathbf{U}_i \big\rangle,
+  \]
+  where $\mathbf{b}_i \in [0,1]^{\Delta_{\max}}$ is the available bandwidth on the links adjacent to $i$ (zero-padded to the maximum degree $\Delta_{\max}$); $q_i$ summarises the local queue (occupancy, destination diversity, normalised time); $\mathbf{p}_i \in \{0,1\}^{|\mathcal{D}_{\text{acc}}|}$ indicates which access destinations are currently queued; $\mathbf{m}_i \in [0,1]^{3}$ are the mean, maximum, and variance of the adjacent-link utilisation; and $\mathbf{U}_i \in [0,1]^{|\mathcal{D}_{\text{acc}}|\times K}$ stacks, for every destination $d$ and path class $k$, the \emph{bottleneck} (maximum-over-hops) utilisation $u_{i,d,k}$ of the corresponding pre-computed path.
+\end{definition}
+
+The term $\mathbf{U}_i$ is the key signal that lets an actor compare path classes by their end-to-end congestion rather than by the first hop alone; it is also, as Section~\ref{sec:baseline-frontier} shows, exactly the information consumed by the greedy per-step heuristic that upper-bounds much of the achievable delivery, so losing to that heuristic is a \emph{learnability} gap rather than an observability one. The local state dimension is bounded by the node degree and the number of endpoint destinations, giving $O(\Delta_{\max} + |\mathcal{D}_{\text{acc}}|\,K)$.
+
+\begin{definition}[Central state]
+  \label{central_state}
+  \[
+    s^{\text{central}} = \langle \mathbf{B}, \mathbf{D} \rangle,
+  \]
+  where $\mathbf{B} \in [0,1]^{|\mathcal{E}|}$ is the normalised available bandwidth on all links and $\mathbf{D} \in \{0,\dots,|\mathcal{D}_{\text{acc}}|\}^{N}$ is the modal queued destination of each agent.
+\end{definition}
+
+This compact central state captures the global link-load picture plus a summary of what each agent is currently serving, while keeping the dimension at $O(|\mathcal{E}| + N)$, independent of per-agent observation size. For the topology used here (Section~\ref{expSetup}) the local state has dimension $94$ and the central state has dimension $|\mathcal{E}| + N = 106 + 14 = 120$.
+
+\subsection{Action Space}
+At each decision, an ingress PE agent selects, for every access destination it may serve, one of $K$ pre-computed paths.
+
+\begin{definition}
+  \label{def:action_space}
+  Agent $i$'s action is the vector $a_i = (a_{i,d})_{d \in \mathcal{D}_{\text{acc}}}$ with $a_{i,d} \in \{0,1,\dots,K-1\}$, where index $k$ selects the $k$-th pre-computed path to destination $d$ (path $0$ is the shortest). The actor emits $K$ logits per destination, i.e.\ a $|\mathcal{D}_{\text{acc}}|\times K$ matrix, and applies a per-destination $\arg\max$ at execution.
+\end{definition}
+
+Paths are pre-computed at initialisation with a $K$-shortest-paths procedure that enforces hop diversity, so that the $K$ classes correspond to genuinely different end-to-end routes. The chosen class is carried as a label so transit nodes forward consistently (a loop-free, MPLS-like LSP). Whenever the topology changes (e.g.\ after a link failure) the $K$-path sets are recomputed on the surviving graph, mirroring the fast reconvergence of a production control plane. During training, exploration uses an $\epsilon$-greedy schedule with temporal decay; at evaluation, action selection is deterministic.
+
+\subsection{State Transition Function}
+As in all model-free MADDPG applications, $\mathcal{P}$ is not modelled explicitly; it is realised by the packet-forwarding environment, and learning relies on sampled transitions $(s,a,r,s')$ under the standard Markov assumption.
+
+\subsection{Reward Function}
+All variants are trained with the same \emph{shared team reward}, computed once per environment step from global outcome statistics and given identically to every agent. Sharing one objective across agents removes the credit-assignment asymmetries that a per-agent reward would introduce, and guarantees that the architectural variants under study differ \emph{only} in critic information and state encoding, never in objective.
+
+\begin{definition}
+  \label{def:reward_function}
+  At environment step $t$, every agent receives
+  \begin{equation}
+    r_t \;=\; w_D\, D_t \;-\; w_L\, L_t \;-\; w_U\, \bar{u}_t \;-\; w_V\, \mathrm{Var}_{e\in\mathcal{E}}\big(u_{e,t}\big),
+    \label{eq:reward_function}
+  \end{equation}
+  where $D_t$ is the fraction of handled packets delivered this step, $L_t$ the fraction dropped, $\bar{u}_t$ the mean link utilisation across $\mathcal{E}$, and the last term the variance of link utilisation (a load-balancing incentive). The canonical weights are $(w_D, w_L, w_U, w_V) = (1.0,\, 1.0,\, 0.1,\, 0.3)$.
+\end{definition}
+
+The delivery and drop terms encode the operational objective directly; the two utilisation terms shape \emph{how} it is achieved, penalising both high average load and uneven load. The mean-utilisation weight $w_U$ deserves emphasis: because longer paths mechanically raise mean utilisation (each packet occupies more links), a large $w_U$ implicitly punishes any deviation from shortest-path forwarding. An earlier configuration of this framework used $w_U = 0.8$, which we show in Section~\ref{sec:ablation} to trap the learned policy near shortest-path behaviour; the canonical value $w_U = 0.1$ retains a mild efficiency incentive while leaving load spreading profitable. We keep $w_U > 0$ rather than removing the term because path efficiency is a genuine secondary objective, not merely a nuisance.
+
+\section{MADDPG-Based Multi-Agent Learning Model}
+\label{sec:maddpg}
+
+\begin{table}[!t]
+  \centering
+  \caption{Notation for MADDPG Algorithm}
+  \label{tab:maddpg_notation}
+  \begin{tabular}{cl}
+    \toprule
+    \textbf{Symbol} & \textbf{Description} \\
+    \midrule
+    $\pi_i(\cdot|s_i;\theta_i)$ & Actor (policy) network of agent $i$ \\
+    $Q_i(s,a;\phi_i)$ & Critic (value) network of agent $i$ \\
+    $\theta_i,\phi_i$ & Actor / critic parameters \\
+    $\theta_i',\phi_i'$ & Target actor / critic parameters \\
+    $\alpha,\beta$ & Actor / critic learning rates \\
+    $\tau$ & Soft target-update rate \\
+    $\gamma$ & Discount factor \\
+    $\mathcal{D},B$ & Replay buffer, minibatch size \\
+    $V_i,A_i$ & Value and advantage streams (duelling) \\
+    $h_v^{(\ell)}, W_1^{(\ell)},W_2^{(\ell)}$ & GNN node features / weights at layer $\ell$ \\
+    $L$ & Number of GNN layers \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The variants employ Centralised Training with Decentralised Execution (CTDE): actors act on local observations, while critics may use either the compact central state or the local state, depending on the configuration under test.
+
+\subsection{Actor--Critic Architecture}
+Each agent $i$ has an actor $\pi_i$ producing per-destination path-class logits, passed through a softmax,
+\begin{equation}
+  \pi_i(a_k\,|\,s_i;\theta_i) = \frac{\exp(z_k)}{\sum_{j=0}^{K-1}\exp(z_j)},
+  \label{eq:softmax_policy}
+\end{equation}
+with deterministic execution $a_{i,d} = \arg\max_{k}\pi_i(k\,|\,s_i;\theta_i)$ applied independently per destination. The critic $Q_i$ estimates the action value from either the central or local state.
+
+\subsection{Value-Function Architectures}
+Two critic heads are compared. The \emph{simple} head estimates the value directly,
+\begin{equation}
+  Q_i(s,a;\phi_i) = f_{\phi_i}([s;a]).
+  \label{eq:simple_q}
+\end{equation}
+The \emph{duelling} head decomposes the value into state-value and advantage streams,
+\begin{align}
+  Q_i(s,a;\phi_i) &= V_i(s) + \Big(A_i(s,a) - \tfrac{1}{|\mathcal{A}_i|}\!\sum_{a'}A_i(s,a')\Big),
+  \label{eq:duelling_decomposition}
+\end{align}
+with the mean-advantage subtraction ensuring identifiability of $V$ and $A$.
+
+\subsection{Learning Objectives and Stabilisation}
+The critic minimises the temporal-difference error
+\begin{equation}
+  \begin{aligned}
+    \mathcal{L}_{\text{critic}}(\phi_i)
+      &= \mathbb{E}_{(s,a,r,s')\sim\mathcal{D}}
+         \!\big[(Q_i(s,a;\phi_i) - y_i)^2\big], \\
+    y_i
+      &= r_i + \gamma Q_i'(s',\pi_i'(s');\phi_i'),
+  \end{aligned}
+  \label{eq:critic_loss_def}
+\end{equation}
+and the actor maximises the expected value
+\begin{equation}
+  \mathcal{L}_{\text{actor}}(\theta_i) = -\,\mathbb{E}_{s\sim\mathcal{D}}\!\big[Q_i(s,\pi_i(s;\theta_i);\phi_i)\big].
+  \label{eq:actor_loss_def}
+\end{equation}
+Both are optimised with Adam. Target networks are soft-updated, $\theta_i' \leftarrow \tau\theta_i + (1-\tau)\theta_i'$ and $\phi_i' \leftarrow \tau\phi_i + (1-\tau)\phi_i'$, and a shared replay buffer breaks temporal correlations.
+
+\subsection{Graph Neural Network Integration}
+When enabled, a two-layer GraphConv encoder pre-processes all agents' observations jointly on the agent graph. With node features $h_v^{(0)}$ initialised from normalised available bandwidth, each layer computes
+\begin{equation}
+  h_v^{(\ell)} = \sigma\!\Big(W_1^{(\ell)} h_v^{(\ell-1)} + W_2^{(\ell)}\,\tfrac{1}{|\mathcal{N}(v)|}\!\sum_{u\in\mathcal{N}(v)} h_u^{(\ell-1)}\Big),
+  \label{eq:gnn_layer}
+\end{equation}
+for $\ell=1,\dots,L$, with a residual connection to the input. The separate weights $W_1,W_2$ let the encoder distinguish a node's own features from its neighbourhood aggregate. Importantly, the message-passing graph (the adjacency / \texttt{edge\_index}) is compiled at initialisation and held fixed throughout training and evaluation; this design choice is revisited in Section~\ref{sec:gnn} when analysing behaviour under link failure.
+
+\subsection{Architectural Variants}
+We evaluate seven configurations spanning two critic domains and two value heads, with and without GNN encoding:
+\begin{itemize}
+  \item \textbf{CC-Simple}, \textbf{CC-Duelling}: centralised critic (central state $\langle\mathbf{B},\mathbf{D}\rangle$) with simple / duelling head;
+  \item \textbf{LC-Simple}, \textbf{LC-Duelling}: local critic (local state) with simple / duelling head;
+  \item \textbf{CC-Simple-GNN}, \textbf{CC-Duelling-GNN}, \textbf{LC-Duelling-GNN}: GNN-encoded counterparts.
+\end{itemize}
+All variants share the same actor, action space, reward, and forwarding model; they differ only in the critic's information set and the optional GNN encoder, isolating the two design axes under study. The complete training procedure follows the standard MADDPG loop (experience collection, periodic minibatch updates, soft target updates, and $\epsilon$-greedy exploration with decay).
+
+\section{Implementation and Simulation Environment} \label{expSetup}
+
+\subsection{System Architecture}
+The framework is implemented in Python with PyTorch; the topology is represented as a NetworkX graph carrying per-link capacity and utilisation. A \texttt{NetworkEngine} advances a hop-by-hop, flow-based packet simulation: at each step every PE agent forwards queued packets along the selected $K$-path class, link utilisation is updated, and rewards are computed. Pre-computed $K$-shortest paths are refreshed whenever the topology changes (e.g.\ after a link failure) so that every routing strategy, learned or fixed, always selects among reachable routes.
+
+\subsection{Network Topology}
+The evaluation uses a realistic 86-node hierarchical service-provider topology (Table~\ref{tab:topology}). Twenty-one access endpoints, seven base stations (BS), seven MEC servers (MEC), and seven content servers (CS), are single-homed to the distribution tier. The fourteen distribution switches act as ingress PE agents; the remaining fifty-one core switches transit traffic. Link capacities are heterogeneous (300--1000 units on backbone links), and the maximum node degree is~6.
+
+\begin{table}[!t]
+  \centering
+  \caption{Service-Provider Topology Characteristics}
+  \label{tab:topology}
+  \begin{tabular}{lc}
+    \toprule
+    \textbf{Property} & \textbf{Value} \\
+    \midrule
+    Number of nodes & 86 \\
+    Number of links ($|\mathcal{E}|$) & 106 \\
+    Access endpoints (BS / MEC / CS) & 21 (7 / 7 / 7) \\
+    Distribution (PE agent) switches ($N$) & 14 \\
+    Core (transit) switches & 51 \\
+    Maximum node degree ($\Delta_{\max}$) & 6 \\
+    Paths per OD pair ($K$) & 3 \\
+    \midrule
+    Local state dimension & 94 \\
+    Central state dimension ($|\mathcal{E}|+N$) & 120 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Traffic Model and Training Operating Point}
+\label{subsec:traffic}
+Traffic is generated as access-to-access \emph{flows}. A base set of flows (scaled by an offered-load factor) is scheduled across each 256-step episode, each flow lasting a fixed duration and injecting one packet per active step at its source. The primary demand regime is a \emph{hotspot} matrix in which a fraction $w=0.75$ of flows is concentrated from $\{$BS1--4, MEC1--4$\}$ onto two content servers $\{$CS1, CS2$\}$, emulating a CDN flash crowd; a \emph{uniform} matrix (source--destination pairs drawn uniformly) is retained for the training-regime ablation. The offered-load factor is swept over $[0.8, 3.0]\times$ at evaluation.
+
+A central methodological choice of this study is that all seven variants are \emph{trained at the stress operating point where adaptive routing is claimed to add value}: hotspot demand at $2\times$ nominal load. Section~\ref{sec:ablation} quantifies what is lost when the same architecture is instead trained at nominal load: several points of delivery at the stress regime, enough to erase most of the learned policy's advantage. Training-regime calibration is therefore treated as a first-class design parameter alongside the architecture itself.
+
+\subsection{Training Hyperparameters}
+Table~\ref{tab:training_params} lists the hyperparameters. Learning rates are small ($\alpha=\beta=3\times10^{-4}$) for stable convergence; the discount $\gamma=0.95$ and soft-update $\tau=5\times10^{-3}$ follow common MADDPG practice. Training runs for up to 400 epochs with early stopping on a validation criterion, and the best validation checkpoint is used for all evaluation. Exploration anneals $\epsilon$ from $1.0$ to $0.05$ over the first 50 epochs.
+
+\begin{table}[!t]
+  \centering
+  \caption{Training Hyperparameters}
+  \label{tab:training_params}
+  \begin{tabular}{lc}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} \\
+    \midrule
+    Actor / critic learning rate ($\alpha,\beta$) & $3\times10^{-4}$ \\
+    Optimiser & Adam \\
+    Discount factor ($\gamma$) & 0.95 \\
+    Soft update rate ($\tau$) & $5\times10^{-3}$ \\
+    Replay buffer capacity & 100{,}000 \\
+    Minibatch size ($B$) & 512 \\
+    Learning frequency & every 10 steps \\
+    Exploration ($\epsilon$) & $1.0 \rightarrow 0.05$ over 50 epochs \\
+    Max training epochs & 400 (early-stopped) \\
+    Episodes per epoch & 5 \\
+    Timesteps per episode & 256 \\
+    Paths per OD pair ($K$) & 3 \\
+    Training demand & hotspot ($w=0.75$), $2\times$ load \\
+    Reward weights $(w_D,w_L,w_U,w_V)$ & $(1.0,1.0,0.1,0.3)$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Baselines: a Deliberately Demanding Set}
+\label{subsec:baselines}
+Because every routing strategy in our framework selects among the same $K$ pre-computed path classes, any fixed selection rule is directly comparable to the learned policies. We exploit this to construct four baselines that bracket the achievable behaviour:
+
+\begin{itemize}
+  \item \textbf{EVPN-SP}: always selects path class $0$ (the shortest path) for every destination --- an equivalent shortest-path control plane and the standard deployed behaviour any learned policy must beat.
+  \item \textbf{Random spreading}: selects uniformly at random among the available path classes for each destination at every decision. This uninformed strategy is a surprisingly strong load balancer: spreading independent load fractions over near-disjoint paths reduces the variance of per-link utilisation, and since loss is a convex function of utilisation, variance reduction directly buys delivery.
+  \item \textbf{Greedy least-utilised}: at every decision, selects for each destination the path class whose current \emph{bottleneck} (maximum-over-hops) utilisation is lowest. This informed, myopic heuristic consumes exactly the $\mathbf{U}_i$ signal available in the agents' observations. It is \emph{not} a flow-optimal oracle --- being memoryless and uncoordinated it can herd traffic under contention, and Section~\ref{sec:failure} shows the learned policy overtaking it under severe failures --- but on the intact topology it traces a strong upper envelope of per-step adaptive routing.
+  \item \textbf{Worst}: the adversarial mirror of greedy (always the most-congested path), giving the floor of the achievable range and calibrating how much routing choices matter at each operating point.
+\end{itemize}
+
+The greedy and random baselines carry complementary diagnostic value. The gap from \emph{random to greedy} measures the total \emph{adaptivity headroom} at an operating point: how much delivery is available to a strategy that reads congestion instead of ignoring it. The gap from the \emph{learned policy to greedy} is a \emph{learnability} gap, since greedy uses only information present in the observation space. And whether the learned policy sits above or below \emph{random} tells us if learning has extracted value beyond blind variance reduction --- a question that shortest-path comparisons alone can never answer.
+
+\subsection{Evaluation Protocols}
+\label{subsec:protocols}
+Five evaluation protocols are used, all at 256 steps per episode:
+\begin{enumerate}
+  \item \textbf{Hotspot load sweep}: all seven variants plus EVPN-SP evaluated at eight offered loads in $[0.8,3.0]\times$ under hotspot demand, 30 episodes per point.
+  \item \textbf{Paired baseline envelope}: at each of the same loads, the four fixed rules of Section~\ref{subsec:baselines} evaluated on \emph{identical traffic realisations} (paired episodes, 20 per point), yielding the achievable envelope.
+  \item \textbf{Paired significance runs}: the best variant (CC-Simple) and all four rules on 60 paired episodes at $2\times$ and $3\times$ load, retaining per-episode series to support paired statistical tests (Section~\ref{subsec:stats}).
+  \item \textbf{Failure-severity sweep}: $n \in \{0,1,2,4,6,8\}$ links chosen uniformly at random (excluding bridges) are removed at the start of every episode; the $K$-path sets are recomputed on the surviving graph, so every strategy re-converges before forwarding begins. Failures are drawn identically across rules (paired), 20 episodes per severity, at $2\times$ hotspot. Randomisation avoids the cherry-picking hazard of hand-selected failures: we show in Section~\ref{sec:failure} that targeted removal of specific links can \emph{help} some strategies.
+  \item \textbf{Targeted dual-link failure}: the two primary inter-cluster links (S8--S13, S8--S22) removed, at $2\times$ hotspot, 20 paired episodes; used for the within-condition GNN comparison of Section~\ref{sec:gnn}.
+\end{enumerate}
+
+\subsection{Evaluation Metrics}
+The headline metric is the \emph{end-to-end packet-delivery ratio} (PDR), $\text{delivered}/\text{injected}$, which counts packets still in flight at episode end as undelivered and is therefore a conservative measure. We also report true per-packet loss, $95$th-percentile end-to-end delay ($d_{95}$), mean delivered hop count (path length), and mean and tail ($95$th-percentile) link utilisation, together with the \emph{overload fraction} (share of steps in which the most-loaded link exceeds its congestion threshold). The hop-count and utilisation statistics are used to explain \emph{how} a policy achieves its delivery, distinguishing shortest-path imitation from active load spreading.
+
+\subsection{Statistical Methodology and Reproducibility}
+\label{subsec:stats}
+Two complementary devices support the claims. First, \emph{monotone orderings across the load sweep}: the centralised-critic variant beats EVPN-SP at all 8 hotspot loads, and beats its matched local-critic counterpart at all 8 loads in each of the three matched pairs (sign test, $p = 2^{-8} < 0.005$ per comparison); conclusions therefore never rest on a single operating point. Second, \emph{paired per-episode tests} on the 60-episode significance runs: traffic realisations are identical across strategies, so per-episode differences are meaningful. We report Wilcoxon signed-rank $p$-values, sign counts, and the paired effect size $d_z = \bar{\Delta}/s_\Delta$. The key comparisons (policy vs.\ random spreading on delivery and on tail delay) yield $|d_z| \in [0.8, 1.1]$ with $p < 10^{-6}$ in all four load--metric combinations, and the tail-delay comparison is \emph{unanimous}: not one of 120 paired episodes favours random spreading (Section~\ref{sec:baseline-frontier}). Differences \emph{within} a critic family (value heads) are smaller and are claimed only directionally. A limitation of this study is that each variant is trained with a single random seed; the magnitude of the headline effects and their monotone consistency across loads make seed-specific artefacts unlikely, but a multi-seed campaign quantifying training-induced variance is left for future work.
+
+\section{Results} \label{sec:results}
+
+\subsection{Training convergence and model selection}
+\label{sec:training}
+All seven variants converge under the shared reward (Fig.~\ref{fig:train-reward}, Fig.~\ref{fig:train-loss}); curves show the raw per-episode signal (faint) and a 41-episode rolling mean (bold). Because training already occurs at the stress regime, rewards start near their final level and improvement is visible mainly in packet loss, where the centralised-critic family separates from the local-critic family early ($\sim$1.9\% vs.\ $\sim$3.0--4.2\% final loss, Table~\ref{tab:training}). All variants stop early; the best validation checkpoint is used for every subsequent evaluation.
+
+One methodological observation deserves emphasis: training-time signals are unreliable \emph{model selectors}. The validation metric ranks CC-Duelling-GNN second-best of the seven, yet on the evaluation protocol of Section~\ref{sec:ceiling} it places fourth, $7$\,pp of delivery behind the leader. All rankings reported below therefore come from the paired evaluation protocols, never from training-time proxies.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{F1_training_reward.pdf}
+  \caption{Training reward (rolling mean over the raw per-episode signal) for the seven variants, trained at $2\times$ hotspot with the shared flow reward.}
+  \label{fig:train-reward}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{F2_training_pkt_loss.pdf}
+  \caption{Training packet loss (rolling mean). The centralised-critic family reaches lower loss than the local-critic family; LC-Duelling-GNN is the weakest throughout.}
+  \label{fig:train-loss}
+\end{figure}
+
+\begin{table}[!t]
+  \centering
+  \caption{Training summary. All variants stopped early; the best validation checkpoint is used for every evaluation.}
+  \label{tab:training}
+  \begin{tabular}{lcccc}
+    \toprule
+    Variant & Final reward & Final loss (\%) & Best epoch & Stop epoch \\
+    \midrule
+    \textbf{CC-Simple} & \textbf{22.7} & \textbf{1.87} & 70 & 190 \\
+    CC-Duelling      & 21.7 & 1.92 & 240 & 360 \\
+    CC-Simple-GNN    & 22.3 & 2.44 & 260 & 380 \\
+    CC-Duelling-GNN  & 21.7 & 2.54 & 230 & 350 \\
+    LC-Simple        & 21.3 & 2.96 & 150 & 270 \\
+    LC-Duelling      & 21.0 & 3.35 & 120 & 240 \\
+    LC-Duelling-GNN  & 17.9 & 4.22 & 150 & 270 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Concentrated demand: the centralised critic wins at every load}
+\label{sec:hotspot}
+Figure~\ref{fig:pdr-hotspot} shows end-to-end PDR versus offered load under hotspot demand. Three orderings hold across the \emph{entire} sweep. First, CC-Simple beats EVPN-SP at all eight loads, and the margin grows monotonically with stress: $+4.5$\,pp at $0.8\times$, $+11.7$\,pp at $2\times$, $+15.1$\,pp at $3\times$ (Fig.~\ref{fig:gap}). Where the shortest-path control plane collapses from $88.2\%$ to $66.0\%$ across the sweep ($-22$\,pp), CC-Simple degrades gracefully from $92.7\%$ to $81.0\%$ ($-12$\,pp). Second, the centralised critic beats its matched local-critic counterpart at every load in all three matched pairs (24 of 24 points; sign test $p<0.005$ per pair) --- with stress-calibrated training there is no regime in which the local critic is the better choice under concentrated demand. Third, the GNN-encoded variant loses to its non-GNN base in nearly every comparison (Section~\ref{sec:gnn}). The weakest learned variant, LC-Duelling-GNN, is the only one to fall below the baseline at high load.
+
+The forwarding statistics identify the mechanism (Table~\ref{tab:mechanism}). At $3\times$ load the variants order \emph{monotonically} along three coupled axes: delivery increases with mean path length and with tail link utilisation, and decreases with overload fraction. CC-Simple routes $0.7$ hops longer than EVPN-SP (8.87 vs.\ 8.15), pushes traffic onto more links (tail utilisation $0.147$ vs.\ $0.110$), and thereby keeps the hottest link below its congestion threshold in far more steps (overload fraction $0.568$ vs.\ $0.708$). The local-critic variants sit between the two: they spread a little, but not enough, because a critic that sees only adjacent-link state cannot credit-assign the system-wide benefit of a longer detour. Deviating from the shortest path is only profitable when the deviation is \emph{coordinated}; the central critic's global view of $\langle\mathbf{B},\mathbf{D}\rangle$ during training is precisely what makes that coordination learnable.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{F3_pdr_vs_load_hotspot.pdf}
+  \caption{End-to-end PDR vs.\ offered load under hotspot demand (30 episodes per point). CC-Simple leads at every load; EVPN-SP (black, dotted) collapses as the hotspot saturates; only LC-Duelling-GNN falls below the baseline.}
+  \label{fig:pdr-hotspot}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{F4_gap_vs_sp_hotspot.pdf}
+  \caption{PDR gap of each variant to EVPN-SP under hotspot demand ($+$ means the learned policy is better). The centralised-critic margins grow monotonically with load; each centralised variant stays above its matched local variant at every point.}
+  \label{fig:gap}
+\end{figure}
+
+\begin{table}[!t]
+  \centering
+  \caption{Forwarding mechanism under hotspot traffic at $3\times$ load. Delivery tracks path length and tail utilisation (spread) and anti-tracks overload fraction, monotonically across all seven variants.}
+  \label{tab:mechanism}
+  \small
+  \begin{tabular}{lrrrr}
+    \toprule
+    Variant & PDR (\%) & Hops & Util-$p_{95}$ & Overload \\
+    \midrule
+    \textbf{CC-Simple}   & \textbf{81.0} & 8.87 & 0.147 & \textbf{0.568} \\
+    CC-Duelling          & 75.4 & 8.88 & 0.138 & 0.611 \\
+    CC-Simple-GNN        & 73.6 & 8.56 & 0.132 & 0.661 \\
+    CC-Duelling-GNN      & 72.6 & 8.78 & 0.131 & 0.641 \\
+    LC-Simple            & 70.9 & 8.50 & 0.124 & 0.673 \\
+    LC-Duelling          & 68.6 & 8.35 & 0.119 & 0.693 \\
+    LC-Duelling-GNN      & 65.0 & 8.49 & 0.115 & 0.703 \\
+    EVPN-SP              & 66.0 & 8.15 & 0.110 & 0.708 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Honest baselines: the delivery--latency frontier}
+\label{sec:baseline-frontier}
+Beating shortest path is a low bar. Figure~\ref{fig:envelope} places CC-Simple inside the envelope traced by the fixed rules of Section~\ref{subsec:baselines} on paired traffic. Two uncomfortable facts and one genuine advantage emerge, and we report all three.
+
+First, \emph{random spreading out-delivers every learned variant at every load}, by a roughly constant $3$--$4$\,pp over CC-Simple. On this capacity-rich topology, blind variance reduction over three hop-diverse paths is a stronger delivery strategy than anything the MADDPG family learned. Second, the greedy least-utilised rule shows that the network itself is rarely the constraint: it sustains $94$--$98\%$ delivery across the whole sweep, so nearly all loss at every operating point is \emph{routing} suboptimality, not capacity exhaustion. The random-to-greedy gap --- the adaptivity headroom --- widens from $2.1$\,pp at $0.8\times$ to $10.5$\,pp at $3\times$: exactly where adaptive routing should pay off most, most of its potential value is still unclaimed by the learned policy. Because greedy consumes only the per-path bottleneck utilisation already present in the agents' observations ($\mathbf{U}_i$, Definition~\ref{local_state}), this is a learnability gap, not an observability one.
+
+The genuine advantage is in the tail of the delay distribution. On the 60-episode paired runs (Fig.~\ref{fig:significance}), CC-Simple's 95th-percentile delay is lower than random spreading's by $0.77$ steps at $2\times$ and $0.53$ steps at $3\times$ --- modest in magnitude but \emph{unanimous} in direction: of the 120 paired episodes, not a single one favours random (37 and 32 favour the policy, the rest are exact ties; Wilcoxon $p \approx 10^{-8}$, $d_z = 0.8$--$1.1$). Random's delivery edge is equally real ($\Delta = 2.9$\,pp, $p < 10^{-6}$). The three deployable strategies therefore sit on a clean frontier at stress: EVPN-SP has the shortest paths and lowest tail delay but catastrophic delivery; random spreading has the highest delivery but the worst tail delay and, by construction, no path stability; CC-Simple holds the interior point --- near-random delivery at near-shortest-path latency, with deterministic, congestion-aware path choices. No baseline Pareto-dominates the learned policy, and which vertex of the frontier an operator should pick depends on whether delivery or latency consistency is the binding constraint.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{F5_baseline_envelope.pdf}
+  \caption{The baseline envelope on paired traffic: greedy least-utilised (upper envelope), random spreading, EVPN-SP, and worst-path (floor), with CC-Simple overlaid. The random$\to$greedy gap is the adaptivity headroom, widening from $2.1$ to $10.5$\,pp with load.}
+  \label{fig:envelope}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.98\linewidth]{F6_paired_significance.pdf}
+  \caption{Paired per-episode differences, CC-Simple $-$ random spreading, on identical traffic ($n=60$ per load). Left: 95th-percentile delay --- every non-tied episode favours the learned policy (37/0 and 32/0). Right: end-to-end PDR --- random robustly delivers $\approx 2.9$\,pp more. Wilcoxon $p$-values annotated; ties excluded by the test.}
+  \label{fig:significance}
+\end{figure}
+
+\subsection{Architecture ordering at the operating point}
+\label{sec:ceiling}
+Figure~\ref{fig:ceiling} compares all seven variants on 20 traffic-paired episodes at the $2\times$ hotspot operating point, now with 95\% confidence intervals (normal approximation on the paired-episode standard deviation, $n=20$) on each variant's PDR estimate, against the fixed-rule marks on the same traffic. The critic-domain ordering is consistent with the load sweep and statistically resolved even at this single operating point: CC-Simple's interval ($87.3\pm1.6$) does not overlap any other variant's, and every centralised variant's point estimate exceeds every local variant's. The value-head comparison is more nuanced than a single point estimate suggests: in the centralised family the simple head significantly beats duelling ($87.3\pm1.6$ vs.\ $82.3\pm1.8$, non-overlapping CIs), but in the local family the two heads are statistically indistinguishable at this sample size ($77.2\pm2.3$ vs.\ $76.6\pm2.5$, heavily overlapping) --- we report this comparison directionally only. Every GNN variant trails its non-GNN base; Section~\ref{sec:gnn} gives paired, higher-power evidence for this comparison. The span of the fixed rules on identical traffic --- from $65.9\%$ (worst) to $97.2\%$ (greedy) --- confirms that path selection is worth $31$\,pp of delivery at this operating point, of which the best learned policy captures about two thirds above the worst-case floor ($+21.4$\,pp).
+
+Two practical conclusions follow. The critic domain is worth $\sim$$10$\,pp (CC-Simple vs.\ LC-Simple) --- by far the dominant, and statistically resolved, design choice. The value head's effect is architecture-dependent: worth up to $5$\,pp \emph{in favour of the simpler head} in the centralised family, but not resolved in the local family at the present sample size. Where it is resolved, the duelling decomposition --- motivated by settings where many actions are value-equivalent --- appears to blur exactly the action distinctions that matter here.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{F7_variant_ceiling_2x.pdf}
+  \caption{End-to-end PDR of all seven variants on 20 traffic-paired episodes at $2\times$ hotspot, with 95\% CIs (normal approximation) and the fixed rules (vertical lines, labelled above the axes) evaluated on the same traffic. Hatched bars are GNN variants. CC-Simple's CI does not overlap any other variant's; simple beats duelling significantly in the CC family but not in the LC family at this sample size.}
+  \label{fig:ceiling}
+\end{figure}
+
+\subsection{Effect of the GNN encoder}
+\label{sec:gnn}
+A recurring motivation for graph encoders in DRL routing is improved generalisation to topology change. Figure~\ref{fig:gnn} reports the \emph{paired} per-episode delivery change from adding a GNN to each base variant, on the intact topology and under the targeted dual-link failure, both at $2\times$ hotspot. Traffic is identically seeded across variant directories (verified: the fixed-rule per-episode series are byte-identical across variant runs), so the GNN$-$non-GNN delta can be computed episode-by-episode and given a proper paired 95\% CI, not merely a point estimate.
+
+On the intact topology the cost is real and significant for all three architectures tested: $-6.7$\,pp ($95\%$ CI $[-8.4,-5.0]$), $-2.1$\,pp ($[-3.9,-0.2]$), and $-3.5$\,pp ($[-5.4,-1.7]$) for CC-Simple, CC-Duelling, and LC-Duelling respectively --- every interval excludes zero. Under the targeted failure, however, the effect is \emph{not} uniform, and this is the more important finding: CC-Simple and LC-Duelling still show a significant cost ($-3.2$\,pp $[-4.7,-1.6]$ and $-2.1$\,pp $[-2.9,-1.3]$), but CC-Duelling shows a significant \emph{gain}, $+2.7$\,pp ($[+1.4,+4.0]$). We therefore cannot make the blanket claim that the GNN encoder provides no robustness benefit under failure; the honest claim is that its effect is architecture-dependent, and remains a net cost for two of the three architectures tested.
+
+We attribute the general intact-topology cost, and the failure-time cost in most architectures, to an implementation property shared with much of the literature: the message-passing adjacency is compiled at initialisation and held fixed, so after a link failure the encoder continues to propagate information over edges that no longer exist. The parameter-sharing benefit of the GNN is retained, but the topology-generalisation benefit would require recomputing the graph at inference, which a statically compiled adjacency does not provide. The added encoder also inflates the optimisation problem (larger input pipelines, later best epochs; Table~\ref{tab:training}), which plausibly explains the intact-topology cost. The CC-Duelling exception suggests the fixed-adjacency argument is not the whole story: the duelling value decomposition may interact with the GNN's smoothed representations in a way that happens to help under this specific failure, though with a single architecture and a single failure scenario we cannot generalise this observation. Online graph reconstruction remains a promising direction regardless --- even the one architecture that benefits from a stale graph might benefit more from a current one --- and, given the next subsection, the bar for any such improvement is higher than the literature assumes: the non-GNN policy is already far more failure-robust than expected.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.9\linewidth]{F9_gnn_paired_delta.pdf}
+  \caption{Paired delivery change from adding a GNN encoder (GNN $-$ non-GNN) at $2\times$ hotspot, per base variant, on the intact topology and under the targeted dual-link failure, with 95\% CIs from per-episode paired differences. All three intact-topology costs and two of three failure-time deltas are significant (CI excludes zero); CC-Duelling shows a significant robustness \emph{gain} under failure.}
+  \label{fig:gnn}
+\end{figure}
+
+\subsection{Out-of-distribution robustness: randomised failure severity}
+\label{sec:failure}
+The literature's standing objection to learned routing is that a policy trained on one topology should degrade badly when that topology changes~\cite{bhavanasi2022routing,bernardez2021machine}. We test this with the randomised severity sweep of Section~\ref{subsec:protocols}: $n$ random non-bridge links fail per episode, all path sets re-converge on the surviving graph, and all strategies face identical failures. The policy under test (CC-Simple) was trained \emph{only} on the intact topology; every failed episode is out-of-distribution.
+
+Figure~\ref{fig:failsev} shows the result, and it inverts the expected story. The learned policy degrades most gracefully of \emph{all} strategies: eight simultaneous failed links --- 7.5\% of the network --- cost it $10.0$\,pp ($87.3\% \to 77.3\%$), a nearly linear decline with no collapse. Random spreading, the delivery champion of Section~\ref{sec:baseline-frontier}, collapses from $90.1\%$ to $9.0\%$ ($-81$\,pp), and the delivery ranking flips at $n \approx 2$: from two failed links onward the learned policy out-delivers random spreading outright, by $+16$\,pp at $n=4$ and $+68$\,pp at $n=8$. Random's nominal-topology advantage is thus a fair-weather artefact: uniform spreading buys variance reduction only while the path classes are short and near-disjoint, and failures destroy precisely that --- the recomputed alternates overlap on the few surviving links and lengthen into multi-hop detours, so blind spreading amplifies load on a network that just lost capacity. EVPN-SP and the greedy rule also degrade far faster than the policy ($-40$ and $-36$\,pp respectively).
+
+The right panel makes the out-of-distribution claim quantitative: the gap from the policy to the greedy rule does not explode with severity, as topology-overfitting would predict --- it \emph{shrinks} monotonically (from $9.9$ to $5.2$\,pp at $n=4$) and then inverts: at $n \ge 6$ the learned policy out-delivers the greedy heuristic by $10$--$16$\,pp. The greedy rule's failure mode is instructive: with few surviving alternatives, every ingress simultaneously chases the momentarily least-loaded path, herding and oscillating; the trained policy, whose value function internalises the downstream consequences of joint decisions, does not. The policy conditions on \emph{observed} per-path utilisation rather than on a memorised topology, which is exactly why removing links does not invalidate what it learned. We note the caveats: this is one policy (the best variant) at 20 episodes per severity, and the greedy comparison at $n=8$ is high-variance; the load-bearing result is the policy-vs-random crossover, which involves no heuristic at all.
+
+Finally, the severity sweep justifies our distrust of hand-picked failure scenarios. In the \emph{targeted} dual-link experiment (used above for the GNN deltas), removing S8--S13 and S8--S22 --- the two links most congested under shortest-path forwarding --- \emph{raises} EVPN-SP delivery by $7.9$\,pp: the failure performs traffic engineering that the control plane could not, by forcing its flows off the self-inflicted bottleneck. A robustness study built on those two links alone would have concluded that failures help. Randomised, severity-controlled failure evaluation avoids this confound and should, we argue, become standard practice for learned-routing robustness claims.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.98\linewidth]{F8_failure_severity.pdf}
+  \caption{Out-of-distribution failure-severity sweep at $2\times$ hotspot: $n$ random non-bridge links fail per episode with full path re-convergence, identically across strategies (20 paired episodes per point). Left: the policy trained on the intact topology degrades most gracefully ($-10$\,pp at $n=8$) while random spreading collapses ($-81$\,pp); the delivery ranking crosses at $n\approx2$. Right: the gap to the greedy rule shrinks and then inverts --- under severe failure the learned policy is the strongest per-step router tested.}
+  \label{fig:failsev}
+\end{figure}
+
+\subsection{Ablation: operating-point calibration and reward correction}
+\label{sec:ablation}
+The headline results above required two calibration steps relative to the original configuration of this framework, and Fig.~\ref{fig:ablation} decomposes their value for CC-Simple, with all three bars now evaluated on the \emph{same} paired 20-episode ceiling protocol at $2\times$ hotspot with 95\% CIs (an earlier assessment of this ablation mixed a 30-episode sweep protocol for the uncalibrated points with a paired ceiling for the calibrated one; unifying the protocol shifts the point estimates slightly but not the conclusion). Trained at nominal ($1\times$) load with the legacy reward weight $w_U = 0.8$, the architecture reaches $80.0\pm2.3\%$ --- only $6.2$\,pp above EVPN-SP and $10.1$\,pp below random spreading. Moving training to the stress operating point ($2\times$ hotspot) with the same legacy reward reaches $83.8\pm1.8\%$ ($+3.8$\,pp); correcting the mean-utilisation weight from $0.8$ to $0.1$ reaches $87.3\pm1.6\%$ (a further $+3.4$\,pp), for a combined $+7.3$\,pp, with the fully calibrated interval not overlapping the uncalibrated one's. The two corrections contribute comparably, and both act through the same mechanism: the legacy weight punished the higher mean utilisation that load spreading necessarily incurs, and nominal-load training never exposed the agent to the congestion patterns that make spreading profitable. An architecture evaluated without these calibrations would be judged $7$\,pp worse than it is --- a difference larger than most architectural effects reported in this study (Section~\ref{sec:ceiling}), which suggests that some cross-paper architecture comparisons are dominated by calibration, not architecture.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.9\linewidth]{F10_ablation_regime.pdf}
+  \caption{Training-regime and reward ablation for CC-Simple, all three bars evaluated on the same paired 20-episode ceiling protocol at $2\times$ hotspot, with 95\% CIs. Left to right: nominal-load training with legacy reward ($w_U{=}0.8$); stress training with legacy reward; stress training with corrected reward ($w_U{=}0.1$). Horizontal lines: EVPN-SP and random spreading at the same operating point.}
+  \label{fig:ablation}
+\end{figure}
+
+A natural objection to stress-calibrated training is that it might come at the cost of nominal-load performance --- the regime a network actually spends most of its time in. We closed this gap by evaluating the full canonical (stress-trained) set under \emph{uniform} demand at the same eight loads used for the hotspot sweep (Fig.~\ref{fig:unisweep}). The cost is real but bounded: every variant trails EVPN-SP at every load, by $0.4$ to $4.0$\,pp depending on variant and load, with the local-critic variants closest to the baseline (LC-Simple: $0.4$--$1.9$\,pp) and the centralised variants somewhat further behind ($2.2$--$4.0$\,pp) --- the same load-spreading behaviour that wins under concentrated demand is a mild, bounded overhead when demand is already balanced. No variant collapses, and the gap does not widen with load. Stress-calibrated training therefore does not trade away nominal-load performance to win at stress; it exchanges a small, bounded cost at nominal load for a large and growing gain under concentrated demand and under failure.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.98\linewidth]{F11_uniform_sweep.pdf}
+  \caption{The canonical (stress-trained) variant set evaluated under \emph{uniform} demand, the regime none of them were trained for. Left: end-to-end PDR vs.\ load; EVPN-SP (black, dotted) leads throughout. Right: PDR gap to EVPN-SP per variant --- bounded between $-4.0$ and $-0.4$\,pp across all variants and loads, with local-critic variants consistently closest to the baseline.}
+  \label{fig:unisweep}
+\end{figure}
+
+\subsection{Summary}
+\label{sec:summary}
+Table~\ref{tab:master} consolidates delivery at the $2\times$ hotspot operating point, intact and under the targeted dual-link failure, for all variants and baselines (see Fig.~\ref{fig:ceiling} for 95\% CIs on the intact-topology column). Five findings stand out. (1)~\textbf{The critic domain is the dominant architectural choice}: with stress-calibrated training, the centralised critic wins every matched comparison at every load, worth ${\sim}10$\,pp of delivery over the local critic, via measurably longer paths and wider load spread. (2)~\textbf{Honest baselines relocate the contribution}: the learned policy does not win raw delivery --- random spreading does, by ${\sim}3$\,pp --- but it holds the only interior point of the delivery/latency frontier, with unanimous tail-latency superiority over random on paired episodes; the widening random-to-greedy gap shows most adaptivity headroom remains unclaimed. (3)~\textbf{Learned routing is the robust strategy out of distribution}, degrading $8\times$ less than random spreading under randomised link failures and overtaking every fixed rule at high severity --- the literature's brittleness claim is inverted in this setting. (4)~\textbf{The GNN encoder's cost is real but not uniform}: it significantly reduces delivery on the intact topology in all three architectures tested, and remains a net cost under failure for two of three, but CC-Duelling shows a significant robustness \emph{gain} --- a single-architecture GNN study would have missed this heterogeneity entirely. (5)~\textbf{Calibration dominates the remaining architectural choices}: training-regime and reward calibration are worth $+7.3$\,pp combined (non-overlapping CIs), more than the value-head choice, while costing only $0.4$--$4.0$\,pp of delivery at nominal uniform load --- a small, bounded price for large stress- and failure-regime gains.
+
+\begin{table}[!t]
+  \centering
+  \caption{End-to-end PDR (\%) at $2\times$ hotspot on paired episodes, intact topology and targeted dual-link failure. Fixed rules evaluated on the same traffic. The dual-failure column illustrates the targeted-failure confound: removing SP's two most congested links helps several strategies (see Section~\ref{sec:failure}).}
+  \label{tab:master}
+  \small
+  \begin{tabular}{lrr}
+    \toprule
+    Strategy & Intact & Dual-link failure \\
+    \midrule
+    \textbf{CC-Simple} & \textbf{87.3} & \textbf{85.5} \\
+    CC-Duelling      & 82.3 & 81.5 \\
+    CC-Simple-GNN    & 80.5 & 82.3 \\
+    CC-Duelling-GNN  & 80.2 & 84.2 \\
+    LC-Simple        & 77.2 & 82.9 \\
+    LC-Duelling      & 76.6 & 83.8 \\
+    LC-Duelling-GNN  & 73.1 & 81.7 \\
+    \midrule
+    Greedy least-utilised & 97.2 & 92.1 \\
+    Random spreading & 90.1 & 89.0 \\
+    EVPN-SP          & 73.8 & 81.7 \\
+    Worst-path       & 65.9 & 77.1 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Conclusion}\label{conclusion}
+This paper presented a systematic, mechanism-grounded comparison of MADDPG routing variants on a realistic 86-node service-provider topology, isolating two design axes --- the critic domain and GNN state encoding --- with training calibrated to the stress operating point and evaluation against a deliberately demanding baseline set: an equivalent shortest-path control plane, uniform random path spreading, and a greedy least-utilised-path heuristic on traffic-paired episodes.
+
+The central architectural finding is that the critic domain dominates. Trained at the concentrated-demand stress regime, the centralised critic beats the shortest-path control plane at every offered load (by $4.5$ to $15.1$\,pp of delivery) and beats its matched local-critic counterpart in every comparison, through a directly measurable mechanism: longer paths, wider tail utilisation, fewer overloaded steps. The duelling value head has an architecture-dependent effect, significant in the centralised family but unresolved in the local family at this sample size; the GNN encoder significantly costs delivery on the intact topology throughout, which we trace to a message-passing graph fixed at training time, and remains a net cost under failure for two of three architectures --- though one architecture shows a genuine, significant robustness gain, cautioning against a blanket verdict on GNN encoders drawn from a single base architecture.
+
+The methodological findings are, we believe, of broader consequence than the architectural ones. Against honest baselines the learned policy does not win raw delivery --- random spreading delivers ${\sim}3$\,pp more at every load --- but it occupies the only interior point of a delivery/latency frontier, with unanimously lower tail delay than random on 120 paired episodes, and the widening gap between random and greedy spreading quantifies how much adaptivity headroom remains unclaimed by current learned policies. Under randomised out-of-distribution link failures the ranking inverts: the policy trained on the intact topology degrades eight times more gracefully than random spreading, overtakes it from two failed links onward, and surpasses even the greedy heuristic at high severity --- directly contradicting the expectation that learned routing is brittle to topology change, and showing that a hand-picked failure scenario can invisibly favour or disfavour any strategy. Finally, calibrating the training operating point and the reward's utilisation weight was worth $+7.3$\,pp --- more than most architectural deltas --- at a bounded cost of only $0.4$--$4.0$\,pp of delivery at nominal uniform load, implying that some architecture comparisons in the literature may measure calibration rather than architecture.
+
+These results offer concrete guidance: deploy a centralised-critic, simple-head agent trained at the stress regime where adaptivity is needed; benchmark it against random spreading and an informed greedy rule, not only shortest path; and evaluate robustness with randomised, severity-controlled failures. Several limitations frame future work: a single topology and one training seed per variant; the unclaimed random-to-greedy headroom, which motivates architectures and objectives that can close the learnability gap (e.g.\ stochastic policies that subsume spreading); and GNN encoders with inference-time graph reconstruction. The same architectural comparison under adversarial perturbation of the agents' observations is the subject of a companion study, assessing whether the advantages identified here persist under malicious, rather than merely natural, stress.
+
+\section*{Acknowledgements}
+This work was supported in part by Instituto de Telecomunica\c{c}\~{o}es under project [PROJECT NAME/NUMBER] and by Funda\c{c}\~{a}o para a Ci\^{e}ncia e a Tecnologia (FCT) under grant [GRANT NUMBER].
+
+\bibliographystyle{IEEEtran}
+\begingroup
+\sloppy
+\setlength{\emergencystretch}{1em}
+\bibliography{IEEEabrv,Routing}
+\endgroup
+
+\section{Biography Section}
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{Amaral_3x4.jpg}}]
+  {Pedro Amaral} received the Ph.D. in Electrical and Computer Engineering in 2013 and the M.Sc. in Computer Engineering in 2006 from Universidade Nova de Lisboa. He is an Assistant Professor at Faculdade de Ci\^encias e Tecnologia, Universidade Nova de Lisboa, a researcher at Instituto de Telecomunica\c{c}\~{o}es, Lisboa, and an IEEE member. Current research interests include model-free resource optimisation algorithms in networks, AI-enhanced network management and control, and network security.
+\end{IEEEbiography}
+\vspace{-1.0\baselineskip}
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{Raimundo_3x4.jpeg}}]
+  {Diogo Raimundo} received the M.Sc.\ degree in Electrical and Computer Engineering from Faculdade de Ci\^{e}ncias e Tecnologia, Universidade Nova de Lisboa, in 2025. His research interests include deep reinforcement learning, multi-agent systems, and network optimisation.
+\end{IEEEbiography}
+
+\end{document}

@@ -4,8 +4,8 @@ set -euo pipefail
 PHASE="${1:-train}"
 VARIANTS="${2:-}"
 
-if [[ ! "$PHASE" =~ ^(train|paper1|paper2|all)$ ]]; then
-  echo "Usage: $0 <train|paper1|paper2|all> [comma-separated-variants]"
+if [[ ! "$PHASE" =~ ^(train|paper1|paper2|hotspot|failure|all)$ ]]; then
+  echo "Usage: $0 <train|paper1|paper2|hotspot|failure|all> [comma-separated-variants]"
   echo "Example: $0 train CC-Duelling,LC-Duelling-GNN"
   exit 1
 fi
