@@ -107,7 +107,9 @@ class AdversaryConfig:
     explore_noise: float = 0.10      # exploration noise on the perturbation direction
     # --- extension flags (see TODO(student) blocks) ---
     coordinate: bool = False         # (A) joint multi-agent perturbation
-    timing_budget: Optional[float] = None  # (B) fraction of steps the attacker may act
+    timing_budget: Optional[float] = 0,2  # (B) fraction of steps the attacker may act
+    timing_score_metric: str = "utilization"  # (B) "utilization" | "q_saliency"
+    timing_window: int = 200         # (B) rolling window for adaptive threshold
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -210,17 +212,28 @@ class AdversaryTrainer:
         self.buffer = ReplayBuffer()
         self._step = 0
 
-    # -- perturb every compromised agent's observation this step -----------
+        # (B) timing-budget bookkeeping
+        self._score_hist: deque = deque(maxlen=cfg.timing_window)
+        self._ep_budget_steps: int = 0
+        self._ep_used: int = 0
+            # -- perturb every compromised agent's observation this step -----------
     def _attack_states(self, states: List[np.ndarray], explore: bool
                        ) -> Tuple[List[np.ndarray], List[Tuple[int, np.ndarray, np.ndarray]]]:
         """Returns (perturbed_states, transitions) where each transition is
         (topo_idx, clean_obs, applied_delta) for the replay buffer."""
-        # TODO(student B — timing): if cfg.timing_budget is set, decide HERE whether
-        # to spend budget on this step using a critical-state score (e.g. max link
-        # utilisation, or |Q(clean)-Q(perturbed)| saliency). Skip perturbation on
-        # low-leverage steps and only push transitions for steps you actually attack.
         adv_states = list(states)
         transitions = []
+
+        # (B) strategically-timed / critical-state gate: decide ONCE per step
+        # whether this is a high-leverage moment worth spending L0 budget on.
+        # Scoring is cheap (max utilisation) or uses the critic (Q-saliency).
+        # If cfg.timing_budget is None the gate is disabled and every step is
+        # attacked (original behaviour).
+        score = self._critical_score(states)
+        if not self._should_attack(score):
+            return adv_states, transitions  # clean pass-through, no transitions logged
+        self._ep_used += 1
+
         for topo_idx in self.trainable_indices:
             orig = np.asarray(states[topo_idx], dtype=np.float32)
             o = torch.as_tensor(orig, device=self.device).unsqueeze(0)
@@ -228,7 +241,7 @@ class AdversaryTrainer:
                 d = self.actor(o).squeeze(0).cpu().numpy()
             if explore:
                 d = d + np.random.normal(0, self.cfg.explore_noise, size=d.shape)
-                d = np.clip(d, -1.0, 1.0)
+            d = np.clip(d, -1.0, 1.0)
             applied = self.adv._project(orig, orig + d * self.cfg.epsilon)
             adv_states[topo_idx] = applied
             transitions.append((topo_idx, orig, (applied - orig) / self.cfg.epsilon))
@@ -238,6 +251,48 @@ class AdversaryTrainer:
         # global link state so the adversary can push multiple flows onto ONE shared
         # surviving link (the mechanism that actually reaches the damage ceiling).
         return adv_states, transitions
+
+    # -- (B) critical-state scoring ----------------------------------------
+    def _critical_score(self, states: List[np.ndarray]) -> float:
+        """Higher = more worth attacking right now. Only used when
+        cfg.timing_budget is set."""
+        if self.cfg.timing_budget is None:
+            return 0.0
+        scores = []
+        for topo_idx in self.trainable_indices:
+            obs = np.asarray(states[topo_idx], dtype=np.float32)
+            if self.cfg.timing_score_metric == "q_saliency":
+                o = torch.as_tensor(obs, device=self.device).unsqueeze(0)
+                with torch.no_grad():
+                    zero = torch.zeros_like(o)
+                    q_clean = self.critic(o, zero)
+                    q_pert = self.critic(o, self.actor(o))
+                scores.append(float((q_pert - q_clean).abs().item()))
+            else:  # "utilization" -- cheap proxy, no forward pass needed
+                if self.adv.bandwidth_indices is not None:
+                    scores.append(float(obs[self.adv.bandwidth_indices].max()))
+                else:
+                    scores.append(float(obs.max()))
+        return max(scores) if scores else 0.0
+
+    def _should_attack(self, score: float) -> bool:
+        """(B) Adaptive-threshold L0 gate. Attacks the top (1 - timing_budget)
+        fraction of observed critical-state scores, tracked against a rolling
+        window, and stops early once the per-episode budget is spent."""
+        if self.cfg.timing_budget is None:
+            return True  # gate disabled -> attack every step (original behaviour)
+
+        if self._ep_used >= self._ep_budget_steps:
+            return False  # budget for this episode is exhausted
+
+        self._score_hist.append(score)
+        if len(self._score_hist) < max(10, self.cfg.timing_window // 4):
+            threshold = 0.0  # not enough history yet -> attack to seed the buffer
+        else:
+            q = max(0.0, min(1.0, 1.0 - self.cfg.timing_budget))
+            threshold = float(np.quantile(self._score_hist, q))
+
+        return score >= threshold
 
     def _victim_actions(self, states: List[np.ndarray]):
         t_states = [states[i] for i in self.trainable_indices]
@@ -275,6 +330,11 @@ class AdversaryTrainer:
         history = {"episode": [], "victim_pdr": [], "attack_loss_reward": []}
         for ep in range(n_episodes):
             self.env.engine.reset_with_load(offered_load_factor=offered_load_factor)
+            # (B) reset the per-episode L0 budget so timing gates apply fresh
+            # each episode (budget is a FRACTION of t_per_ep, not cumulative).
+            if self.cfg.timing_budget is not None:
+                self._ep_budget_steps = max(1, int(np.ceil(self.cfg.timing_budget * t_per_ep)))
+                self._ep_used = 0
             if n_link_failures:
                 # reuse the runner's failure injector at the call site if you want
                 # failure-regime adversaries; left off by default here.
