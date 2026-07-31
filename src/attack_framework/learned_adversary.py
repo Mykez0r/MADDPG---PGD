@@ -107,7 +107,7 @@ class AdversaryConfig:
     explore_noise: float = 0.10      # exploration noise on the perturbation direction
     # --- extension flags (see TODO(student) blocks) ---
     coordinate: bool = False         # (A) joint multi-agent perturbation
-    timing_budget: Optional[float] = 0.1  # (B) fraction of steps the attacker may act
+    timing_budget: Optional[float] = 0.25  # (B) fraction of steps the attacker may act
     timing_score_metric: str = "utilization"  # (B) "utilization" | "q_saliency"
     timing_window: int = 200         # (B) rolling window for adaptive threshold
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
