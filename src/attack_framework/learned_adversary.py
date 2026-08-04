@@ -30,7 +30,10 @@ contributions:
       post-failure recovery window (CongestionFailureTimer below).
     - "both":     event gate OR quantile gate.
   Every step's decision is logged (trigger label + underlying signals) via
-  CongestionFailureTimer.log for post-hoc analysis.
+  CongestionFailureTimer.log for post-hoc analysis, AND a mode-agnostic
+  per-step attack_log records every attack decision tagged with its episode
+  number regardless of timing_mode (see AdversaryTrainer.attack_log_df /
+  attacks_per_episode).
 
 Eval: `LearnedObservationAdversary` exposes `generate_adversarial_state(...)` with
 the SAME signature as FGSMAttackFramework, so a trained adversary drops straight
@@ -123,7 +126,7 @@ class AdversaryConfig:
     timing_window: int = 200               # (B) rolling window for adaptive threshold
 
     # --- (B) event-driven timing: congestion onset / post-failure recovery ---
-    timing_mode: str = "both"      # "quantile" | "event" | "both"
+    timing_mode: str = "both"          # "quantile" | "event" | "both"
     onset_rise_threshold: float = 0.80  # utilisation level that defines "congested"
     onset_hysteresis: float = 0.10      # must drop this far below before re-arming
     failure_loss_spike: float = 0.15    # jump in loss_frac vs rolling mean -> failure
@@ -350,6 +353,13 @@ class AdversaryTrainer:
         self._cur_step_in_ep: int = 0
         self.trigger_logs: List[pd.DataFrame] = []  # one df per completed episode
 
+        # (B) mode-agnostic attack log: records EVERY step's attack decision
+        # tagged with its episode, regardless of timing_mode (quantile/event/
+        # both). Use this for "which episode did it attack in" analysis --
+        # trigger_logs above only exists for "event"/"both" modes.
+        self._cur_episode: int = -1
+        self.attack_log: List[Dict] = []
+
     # -- perturb every compromised agent's observation this step -----------
     def _attack_states(self, states: List[np.ndarray], explore: bool
                         ) -> Tuple[List[np.ndarray], List[Tuple[int, np.ndarray, np.ndarray]]]:
@@ -366,7 +376,22 @@ class AdversaryTrainer:
         # If cfg.timing_budget is None the gate is disabled and every step is
         # attacked (original behaviour).
         score = self._critical_score(states)
-        if not self._should_attack(score):
+        attacked = self._should_attack(score)
+
+        # mode-agnostic per-step attack log, tagged with the current episode
+        # (works for quantile/event/both, unlike CongestionFailureTimer.log
+        # which is only populated in "event"/"both" modes).
+        self.attack_log.append({
+            "episode": self._cur_episode,
+            "step": self._cur_step_in_ep,
+            "attacked": attacked,
+            "score": score,
+            "timing_mode": self.cfg.timing_budget is not None and self.cfg.timing_mode or "disabled",
+            "ep_used": self._ep_used,
+            "ep_budget_steps": self._ep_budget_steps,
+        })
+
+        if not attacked:
             return adv_states, transitions  # clean pass-through, no transitions logged
         self._ep_used += 1
 
@@ -492,15 +517,18 @@ class AdversaryTrainer:
         only the proxy signal drives the post-failure gate (previous
         behaviour, now made explicit rather than silently a no-op).
 
-        If `log_dir` is given and timing_mode is "event"/"both", each episode's
-        per-step trigger log (from CongestionFailureTimer) is written to
-        f"{log_dir}/trigger_log_ep{ep:04d}.csv" and also kept in
-        history["trigger_logs"] as a list of DataFrames for in-notebook analysis."""
+        If `log_dir` is given:
+          - "event"/"both" modes also write f"{log_dir}/trigger_log_ep{ep:04d}.csv"
+            (from CongestionFailureTimer) and keep them in history["trigger_logs"].
+          - ALL modes write f"{log_dir}/attack_log_ep{ep:04d}.csv" -- the
+            mode-agnostic per-step attack decision log, so you can always see
+            which episode(s) contained attacks."""
         history = {"episode": [], "victim_pdr": [], "attack_loss_reward": []}
         if self.cfg.timing_mode in ("event", "both"):
             history["trigger_logs"] = []
 
         for ep in range(n_episodes):
+            self._cur_episode = ep  # tag every attack-log row with the right episode
             self.env.engine.reset_with_load(offered_load_factor=offered_load_factor)
             # (B) reset the per-episode L0 budget so timing gates apply fresh
             # each episode (budget is a FRACTION of t_per_ep, not cumulative).
@@ -551,6 +579,16 @@ class AdversaryTrainer:
                     os.makedirs(log_dir, exist_ok=True)
                     ep_log.to_csv(f"{log_dir}/trigger_log_ep{ep:04d}.csv", index=False)
 
+            # mode-agnostic attack log: always written if log_dir is set, so
+            # you can see which episode(s) an attack fired in even under pure
+            # "quantile" mode (where trigger_logs above stays empty).
+            if log_dir is not None:
+                import os
+                os.makedirs(log_dir, exist_ok=True)
+                ep_attack_rows = [r for r in self.attack_log if r["episode"] == ep]
+                pd.DataFrame(ep_attack_rows).to_csv(
+                    f"{log_dir}/attack_log_ep{ep:04d}.csv", index=False)
+
             if ep % log_every == 0:
                 print(f"[adv] ep {ep:4d} victim PDR {pdr:6.2f}% "
                       f"mean step-loss reward {ep_reward / t_per_ep:.4f}")
@@ -562,6 +600,26 @@ class AdversaryTrainer:
         if not self.trigger_logs:
             return pd.DataFrame()
         return pd.concat(self.trigger_logs, ignore_index=True)
+
+    def attack_log_df(self) -> pd.DataFrame:
+        """Mode-agnostic per-step attack decision log (works for quantile,
+        event, and both modes). Columns: episode, step, attacked, score,
+        timing_mode, ep_used, ep_budget_steps."""
+        return pd.DataFrame(self.attack_log)
+
+    def attacks_per_episode(self) -> pd.DataFrame:
+        """Convenience summary: how many steps were attacked in each episode,
+        and what fraction of that episode's budget was used."""
+        df = self.attack_log_df()
+        if df.empty:
+            return df
+        summary = (df.groupby("episode")
+                     .agg(steps_attacked=("attacked", "sum"),
+                          total_steps=("attacked", "count"),
+                          ep_budget_steps=("ep_budget_steps", "max"))
+                     .reset_index())
+        summary["attacked_fraction"] = summary["steps_attacked"] / summary["total_steps"]
+        return summary
 
     def save(self, path: str):
         self.adv.save(path)
