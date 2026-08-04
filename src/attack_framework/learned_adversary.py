@@ -33,7 +33,8 @@ contributions:
   CongestionFailureTimer.log for post-hoc analysis, AND a mode-agnostic
   per-step attack_log records every attack decision tagged with its episode
   number regardless of timing_mode (see AdversaryTrainer.attack_log_df /
-  attacks_per_episode).
+  attacks_per_episode). Both logs are now also PRINTED automatically during
+  and after train() -- no extra calls needed to see what happened.
 
 Eval: `LearnedObservationAdversary` exposes `generate_adversarial_state(...)` with
 the SAME signature as FGSMAttackFramework, so a trained adversary drops straight
@@ -127,7 +128,7 @@ class AdversaryConfig:
 
     # --- (B) event-driven timing: congestion onset / post-failure recovery ---
     timing_mode: str = "both"          # "quantile" | "event" | "both"
-    onset_rise_threshold: float = 0.80  # utilisation level that defines "congested"
+    onset_rise_threshold: float = 0.85  # utilisation level that defines "congested"
     onset_hysteresis: float = 0.10      # must drop this far below before re-arming
     failure_loss_spike: float = 0.15    # jump in loss_frac vs rolling mean -> failure
     failure_baseline_window: int = 50   # rolling window for the loss baseline
@@ -522,7 +523,16 @@ class AdversaryTrainer:
             (from CongestionFailureTimer) and keep them in history["trigger_logs"].
           - ALL modes write f"{log_dir}/attack_log_ep{ep:04d}.csv" -- the
             mode-agnostic per-step attack decision log, so you can always see
-            which episode(s) contained attacks."""
+            which episode(s) contained attacks.
+
+        Console output (always printed, no extra calls needed):
+          - every `log_every` episodes: victim PDR, mean step-loss reward,
+            attacked-steps count, and (in "event"/"both" modes) a trigger
+            breakdown for that episode.
+          - after training finishes: a full attacks-per-episode table, total
+            attacked-steps percentage, all-episode trigger counts, and a
+            TP/FN/FP comparison of the loss-spike proxy vs ground-truth
+            failures (if a failure_injector was used)."""
         history = {"episode": [], "victim_pdr": [], "attack_loss_reward": []}
         if self.cfg.timing_mode in ("event", "both"):
             history["trigger_logs"] = []
@@ -569,6 +579,7 @@ class AdversaryTrainer:
             history["victim_pdr"].append(pdr)
             history["attack_loss_reward"].append(ep_reward / t_per_ep)
 
+            ep_log = pd.DataFrame()
             if self.cfg.timing_mode in ("event", "both"):
                 ep_log = self.event_timer.log_df()
                 ep_log["episode"] = ep
@@ -589,9 +600,44 @@ class AdversaryTrainer:
                 pd.DataFrame(ep_attack_rows).to_csv(
                     f"{log_dir}/attack_log_ep{ep:04d}.csv", index=False)
 
+            # per-episode attack breakdown (mode-agnostic; always available)
+            ep_attack_rows = [r for r in self.attack_log if r["episode"] == ep]
+            ep_attacked_steps = sum(1 for r in ep_attack_rows if r["attacked"])
+
             if ep % log_every == 0:
-                print(f"[adv] ep {ep:4d} victim PDR {pdr:6.2f}% "
-                      f"mean step-loss reward {ep_reward / t_per_ep:.4f}")
+                msg = (f"[adv] ep {ep:4d} victim PDR {pdr:6.2f}% "
+                       f"mean step-loss reward {ep_reward / t_per_ep:.4f} "
+                       f"attacked {ep_attacked_steps}/{len(ep_attack_rows)} steps")
+                if self.cfg.timing_mode in ("event", "both") and not ep_log.empty:
+                    counts = ep_log["trigger"].value_counts().to_dict()
+                    counts.pop("none", None)
+                    if counts:
+                        breakdown = ", ".join(f"{k}={v}" for k, v in counts.items())
+                        msg += f" [{breakdown}]"
+                print(msg)
+
+        # end-of-training summary: always shown, no extra calls needed
+        print("\n" + "=" * 60)
+        print("Attack timing summary (all episodes)")
+        print("=" * 60)
+        summary = self.attacks_per_episode()
+        if not summary.empty:
+            print(summary.to_string(index=False))
+            print(f"\nTotal steps attacked: {int(summary['steps_attacked'].sum())} / "
+                  f"{int(summary['total_steps'].sum())} "
+                  f"({summary['steps_attacked'].sum() / summary['total_steps'].sum():.1%})")
+        if self.cfg.timing_mode in ("event", "both"):
+            trig_df = self.all_trigger_logs()
+            if not trig_df.empty:
+                print("\nTrigger breakdown (all episodes):")
+                print(trig_df["trigger"].value_counts().to_string())
+                if trig_df["ground_truth_failure"].any() or trig_df["proxy_failure_fired"].any():
+                    tp = int((trig_df.ground_truth_failure & trig_df.proxy_failure_fired).sum())
+                    fn = int((trig_df.ground_truth_failure & ~trig_df.proxy_failure_fired).sum())
+                    fp = int((~trig_df.ground_truth_failure & trig_df.proxy_failure_fired).sum())
+                    print(f"\nFailure-proxy vs ground truth: TP={tp} FN={fn} FP={fp}")
+        print("=" * 60 + "\n")
+
         return history
 
     def all_trigger_logs(self) -> pd.DataFrame:
