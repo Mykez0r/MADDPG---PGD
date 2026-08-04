@@ -128,7 +128,7 @@ class AdversaryConfig:
 
     # --- (B) event-driven timing: congestion onset / post-failure recovery ---
     timing_mode: str = "both"          # "quantile" | "event" | "both"
-    onset_rise_threshold: float = 0.85  # utilisation level that defines "congested"
+    onset_rise_threshold: float = 0.90  # utilisation level that defines "congested"
     onset_hysteresis: float = 0.10      # must drop this far below before re-arming
     failure_loss_spike: float = 0.15    # jump in loss_frac vs rolling mean -> failure
     failure_baseline_window: int = 50   # rolling window for the loss baseline
