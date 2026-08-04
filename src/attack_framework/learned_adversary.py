@@ -23,18 +23,33 @@ contributions:
   (B) STRATEGICALLY-TIMED / critical-state attacks (spend an L0 budget only at the
       high-leverage moments -- congestion onset, immediately post-failure)
 
-  (B) is now implemented with two selectable timing strategies:
-    - "quantile": the original adaptive-threshold gate (attack the top-k% of
-      steps by a rolling critical-state score).
+  (B) IMPORTANT FIX (this revision): the timing-budget gate used to live ONLY on
+  AdversaryTrainer (self._should_attack / self._attack_states), which is exercised
+  during train(). LearnedObservationAdversary.generate_adversarial_state() -- the
+  FGSM-compatible entry point actually called at EVALUATION time by
+  standalone_experiment_runner -- bypassed the gate entirely and perturbed on every
+  call, so a trained adversary would attack 100% of steps at eval regardless of
+  `timing_budget`. The gating logic (quantile score, event timer, per-episode
+  budget bookkeeping) now lives on LearnedObservationAdversary itself, and BOTH
+  AdversaryTrainer (joint, multi-agent view) and generate_adversarial_state
+  (per-agent view, since the FGSM-compatible signature only gets one agent's obs
+  at a time) route through it -- so training and evaluation always agree on
+  whether a step gets attacked.
+
+  Two selectable timing strategies:
+    - "quantile": adaptive-threshold gate (attack the top-k% of steps by a
+      rolling critical-state score).
     - "event":    fires only on a congestion-onset rising edge or during a fixed
       post-failure recovery window (CongestionFailureTimer below).
     - "both":     event gate OR quantile gate.
+
+  Call `adversary.new_episode(t_per_ep=...)` at the start of every eval episode
+  so the per-episode budget resets correctly (otherwise the budget keeps
+  accumulating against the last-seen t_per_ep across the whole eval run).
+
   Every step's decision is logged (trigger label + underlying signals) via
-  CongestionFailureTimer.log for post-hoc analysis, AND a mode-agnostic
-  per-step attack_log records every attack decision tagged with its episode
-  number regardless of timing_mode (see AdversaryTrainer.attack_log_df /
-  attacks_per_episode). Both logs are now also PRINTED automatically during
-  and after train() -- no extra calls needed to see what happened.
+  CongestionFailureTimer.log and the mode-agnostic attack_log, both plain
+  lists/dicts (no pandas DataFrames), so they are JSON-serialisable directly.
 
 Eval: `LearnedObservationAdversary` exposes `generate_adversarial_state(...)` with
 the SAME signature as FGSMAttackFramework, so a trained adversary drops straight
@@ -45,13 +60,15 @@ Run the trainer with tools/train_adversary.py (wires up env + frozen victim).
 """
 from __future__ import annotations
 
+import csv
+import json
+import os
 import random
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -152,10 +169,11 @@ class CongestionFailureTimer:
         proxy for an explicit `info["link_failure"]` flag if your env exposes
         one -- it will be more reliable than inferring failures from loss.
 
-    Every step's decision is appended to `self.log` (trigger label + the
-    underlying signals) so training/eval runs can be analysed post-hoc, e.g.
-    correlating trigger type with victim PDR or plotting utilisation/loss
-    with markers at each trigger event.
+    Every step's decision is appended to `self.log` (a plain list of dicts --
+    trigger label + the underlying signals, all JSON-serialisable) so
+    training/eval runs can be analysed post-hoc, e.g. correlating trigger type
+    with victim PDR or plotting utilisation/loss with markers at each trigger
+    event.
     """
 
     def __init__(self, cfg: AdversaryConfig):
@@ -238,8 +256,12 @@ class CongestionFailureTimer:
         })
         return trigger != "none"
 
-    def log_df(self) -> pd.DataFrame:
-        return pd.DataFrame(self.log)
+    def trigger_counts(self) -> Dict[str, int]:
+        """Plain dict of {trigger_label: count} for this episode's log."""
+        counts: Dict[str, int] = {}
+        for row in self.log:
+            counts[row["trigger"]] = counts.get(row["trigger"], 0) + 1
+        return counts
 
 
 # ──────────────────── eval-time interface (FGSM-compatible) ───────────────────
@@ -249,6 +271,27 @@ class LearnedObservationAdversary:
     FGSMAttackFramework, so it drops into `_attack_episodes` unchanged. Set the
     runner's `attack_framework` to an instance of this to evaluate a learned
     adversary with the existing damage-ceiling / random-control / flip metrics.
+
+    THE TIMING-BUDGET GATE NOW LIVES HERE (previously only on AdversaryTrainer,
+    which meant eval-time calls to generate_adversarial_state() bypassed it and
+    attacked 100% of steps). Both AdversaryTrainer and generate_adversarial_state
+    route through the SAME should_attack()/quantile/event machinery below, so
+    training and evaluation are always consistent.
+
+    NOTE on the event/onset trigger at eval time: the FGSM-compatible signature
+    `generate_adversarial_state(state, ...)` only receives ONE agent's
+    observation per call (no joint view across all compromised agents like
+    AdversaryTrainer has during training). The congestion-onset utilisation
+    check and the quantile score therefore use THIS agent's own observation as
+    the proxy, rather than the max across all compromised agents. This is a
+    documented approximation required by the fixed eval interface; if you want
+    the exact joint-max semantics at eval, call `should_attack_joint(states,
+    trainable_indices, agent_index)` directly with the full state list instead
+    of going through generate_adversarial_state().
+
+    Call `new_episode(t_per_ep=...)` at the start of every eval episode so the
+    per-episode budget resets (otherwise it accumulates against the last-seen
+    t_per_ep across the whole eval run).
     """
 
     def __init__(self, obs_dim: int, cfg: AdversaryConfig,
@@ -262,6 +305,159 @@ class LearnedObservationAdversary:
         self.bandwidth_indices = list(bandwidth_indices) if bandwidth_indices else None
         # stats block kept for API parity with FGSMAttackFramework
         self.attack_stats: Dict = {"total_attacks": 0, "attack_success_count": 0}
+
+        # optional: trainer wires this in so q_saliency scoring can use the
+        # DDPG critic; if None (pure eval-only load), falls back to "utilization"
+        self.critic: Optional[AdversaryCritic] = None
+
+        # --- (B) timing-budget gate state (single source of truth) ---
+        self.event_timer = CongestionFailureTimer(cfg) if cfg.timing_mode in ("event", "both") else None
+        self._score_hist: deque = deque(maxlen=cfg.timing_window)
+        self._ep_budget_steps: int = 0
+        self._ep_used: int = 0
+        self._cur_step_in_ep: int = 0
+        self._cur_episode: int = -1
+        self._t_per_ep: Optional[int] = None
+        self._last_loss_frac: float = 0.0
+        self._last_ground_truth_failure: bool = False
+        self.attack_log: List[Dict] = []
+
+    # -- episode bookkeeping -------------------------------------------------
+    def new_episode(self, episode_idx: Optional[int] = None, t_per_ep: Optional[int] = None):
+        """Reset the per-episode L0 budget and event-timer state. MUST be
+        called at the start of every episode (training AND evaluation) or the
+        budget will not reset and the gate will drift out of sync with actual
+        episode boundaries."""
+        self._cur_episode = episode_idx if episode_idx is not None else self._cur_episode + 1
+        self._cur_step_in_ep = 0
+        self._ep_used = 0
+        if t_per_ep is not None:
+            self._t_per_ep = t_per_ep
+        if self.cfg.timing_budget is not None and self._t_per_ep:
+            self._ep_budget_steps = max(1, int(np.ceil(self.cfg.timing_budget * self._t_per_ep)))
+        else:
+            self._ep_budget_steps = 0
+        if self.event_timer is not None:
+            self.event_timer.reset()
+        self._last_loss_frac = 0.0
+        self._last_ground_truth_failure = False
+
+    def update_step_context(self, loss_frac: float = 0.0, ground_truth_failure: bool = False):
+        """Feed the latest per-step packet-loss fraction (and optional
+        ground-truth failure flag) into the gate. Call this once per step,
+        BEFORE the next call to generate_adversarial_state / should_attack, so
+        the event timer's failure detector has fresh data."""
+        self._last_loss_frac = loss_frac
+        self._last_ground_truth_failure = ground_truth_failure
+
+    # -- (B) critical-state scoring (single-observation approximation) ------
+    def _critical_score_single(self, obs: np.ndarray) -> float:
+        if self.cfg.timing_budget is None:
+            return 0.0
+        if self.cfg.timing_score_metric == "q_saliency" and self.critic is not None:
+            o = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+            with torch.no_grad():
+                zero = torch.zeros_like(o)
+                q_clean = self.critic(o, zero)
+                q_pert = self.critic(o, self.actor(o))
+            return float((q_pert - q_clean).abs().item())
+        if self.bandwidth_indices is not None:
+            return float(obs[self.bandwidth_indices].max())
+        return float(obs.max())
+
+    def _quantile_gate(self, score: float) -> bool:
+        self._score_hist.append(score)
+        if len(self._score_hist) < max(10, self.cfg.timing_window // 4):
+            threshold = 0.0  # not enough history yet -> attack to seed the buffer
+        else:
+            q = max(0.0, min(1.0, 1.0 - self.cfg.timing_budget))
+            threshold = float(np.quantile(self._score_hist, q))
+        return score >= threshold
+
+    def should_attack(self, obs: np.ndarray) -> Tuple[bool, float]:
+        """Single-observation gate used by generate_adversarial_state (eval
+        path). Returns (attacked, score). Advances the internal step counter."""
+        if self.cfg.timing_budget is None:
+            self._log_decision(True, 0.0)
+            return True, 0.0
+
+        if self._ep_budget_steps and self._ep_used >= self._ep_budget_steps:
+            self._log_decision(False, 0.0)
+            self._cur_step_in_ep += 1
+            return False, 0.0
+
+        score = self._critical_score_single(obs)
+        mode = self.cfg.timing_mode
+        event_hit = False
+        if mode in ("event", "both") and self.event_timer is not None:
+            event_hit = self.event_timer.update_and_check(
+                self._cur_step_in_ep, [obs], [0], self.bandwidth_indices,
+                self._last_loss_frac, ground_truth_failure=self._last_ground_truth_failure)
+            if mode == "event":
+                attacked = event_hit
+                if attacked:
+                    self._ep_used += 1
+                self._log_decision(attacked, score)
+                self._cur_step_in_ep += 1
+                return attacked, score
+
+        quantile_hit = self._quantile_gate(score)
+        attacked = (quantile_hit or event_hit) if mode == "both" else quantile_hit
+        if attacked:
+            self._ep_used += 1
+        self._log_decision(attacked, score)
+        self._cur_step_in_ep += 1
+        return attacked, score
+
+    def should_attack_joint(self, states: List[np.ndarray], trainable_indices: Sequence[int],
+                             agent_index: int) -> Tuple[bool, float]:
+        """Exact joint-max-utilisation gate, matching AdversaryTrainer's
+        training-time semantics precisely. Use this instead of should_attack()
+        if your eval harness can supply the full states list (all compromised
+        agents), not just one agent's observation."""
+        if self.cfg.timing_budget is None:
+            self._log_decision(True, 0.0)
+            return True, 0.0
+
+        if self._ep_budget_steps and self._ep_used >= self._ep_budget_steps:
+            self._log_decision(False, 0.0)
+            self._cur_step_in_ep += 1
+            return False, 0.0
+
+        obs = np.asarray(states[agent_index], dtype=np.float32)
+        score = self._critical_score_single(obs)
+        mode = self.cfg.timing_mode
+        event_hit = False
+        if mode in ("event", "both") and self.event_timer is not None:
+            event_hit = self.event_timer.update_and_check(
+                self._cur_step_in_ep, states, trainable_indices, self.bandwidth_indices,
+                self._last_loss_frac, ground_truth_failure=self._last_ground_truth_failure)
+            if mode == "event":
+                attacked = event_hit
+                if attacked:
+                    self._ep_used += 1
+                self._log_decision(attacked, score)
+                self._cur_step_in_ep += 1
+                return attacked, score
+
+        quantile_hit = self._quantile_gate(score)
+        attacked = (quantile_hit or event_hit) if mode == "both" else quantile_hit
+        if attacked:
+            self._ep_used += 1
+        self._log_decision(attacked, score)
+        self._cur_step_in_ep += 1
+        return attacked, score
+
+    def _log_decision(self, attacked: bool, score: float):
+        self.attack_log.append({
+            "episode": self._cur_episode,
+            "step": self._cur_step_in_ep,
+            "attacked": attacked,
+            "score": score,
+            "timing_mode": self.cfg.timing_mode if self.cfg.timing_budget is not None else "disabled",
+            "ep_used": self._ep_used,
+            "ep_budget_steps": self._ep_budget_steps,
+        })
 
     # -- projection into the admissible perturbation set --------------------
     def _project(self, orig: np.ndarray, adv: np.ndarray) -> np.ndarray:
@@ -285,8 +481,18 @@ class LearnedObservationAdversary:
                                     bandwidth_indices=None) -> np.ndarray:
         """FGSM-compatible entry point. agent_network/engine are unused by the
         grey-box adversary (it acts on the observation alone) but kept in the
-        signature so the runner call site does not change."""
-        return self.perturb(state)
+        signature so the runner call site does not change.
+
+        THIS NOW RESPECTS cfg.timing_budget: if the gate says "don't attack
+        this step" (budget exhausted, or neither the quantile nor event
+        trigger fired), the CLEAN state is returned unchanged. Previously this
+        method perturbed unconditionally, which is why timing_budget appeared
+        to have no effect at evaluation time."""
+        orig = np.asarray(state, dtype=np.float32)
+        attacked, _score = self.should_attack(orig)
+        if not attacked:
+            return orig
+        return self.perturb(orig)
 
     # -- persistence -------------------------------------------------------
     def save(self, path: str):
@@ -336,30 +542,18 @@ class AdversaryTrainer:
         self.critic = AdversaryCritic(obs_dim, cfg.hidden).to(self.device)
         self.critic_t = AdversaryCritic(obs_dim, cfg.hidden).to(self.device)
         self.critic_t.load_state_dict(self.critic.state_dict())
+        self.adv.critic = self.critic  # let q_saliency scoring see the live critic
         self.opt_a = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
         self.opt_c = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
         self.buffer = ReplayBuffer()
         self._step = 0
 
-        # (B) timing-budget bookkeeping
-        self._score_hist: deque = deque(maxlen=cfg.timing_window)
-        self._ep_budget_steps: int = 0
-        self._ep_used: int = 0
-
-        # (B) event-driven timing (congestion onset / post-failure)
-        self.event_timer = CongestionFailureTimer(cfg)
+        # (B) the gate itself now lives on self.adv (single source of truth,
+        # shared with generate_adversarial_state at eval time). Training uses
+        # self.adv.should_attack_joint(...) so it keeps the exact joint-max
+        # utilisation semantics across all compromised agents.
         self._pending_states: Optional[List[np.ndarray]] = None
-        self._last_loss_frac: float = 0.0
-        self._last_ground_truth_failure: bool = False
-        self._cur_step_in_ep: int = 0
-        self.trigger_logs: List[pd.DataFrame] = []  # one df per completed episode
-
-        # (B) mode-agnostic attack log: records EVERY step's attack decision
-        # tagged with its episode, regardless of timing_mode (quantile/event/
-        # both). Use this for "which episode did it attack in" analysis --
-        # trigger_logs above only exists for "event"/"both" modes.
-        self._cur_episode: int = -1
-        self.attack_log: List[Dict] = []
+        self.trigger_logs: List[List[Dict]] = []  # one list-of-dicts per completed episode
 
     # -- perturb every compromised agent's observation this step -----------
     def _attack_states(self, states: List[np.ndarray], explore: bool
@@ -368,33 +562,16 @@ class AdversaryTrainer:
         (topo_idx, clean_obs, applied_delta) for the replay buffer."""
         adv_states = list(states)
         transitions = []
-        self._pending_states = states  # let the event timer see this step's obs
 
         # (B) strategically-timed / critical-state gate: decide ONCE per step
         # whether this is a high-leverage moment worth spending L0 budget on.
-        # Scoring is cheap (max utilisation) or uses the critic (Q-saliency),
-        # or event-driven (congestion onset / post-failure recovery window).
-        # If cfg.timing_budget is None the gate is disabled and every step is
-        # attacked (original behaviour).
-        score = self._critical_score(states)
-        attacked = self._should_attack(score)
-
-        # mode-agnostic per-step attack log, tagged with the current episode
-        # (works for quantile/event/both, unlike CongestionFailureTimer.log
-        # which is only populated in "event"/"both" modes).
-        self.attack_log.append({
-            "episode": self._cur_episode,
-            "step": self._cur_step_in_ep,
-            "attacked": attacked,
-            "score": score,
-            "timing_mode": self.cfg.timing_budget is not None and self.cfg.timing_mode or "disabled",
-            "ep_used": self._ep_used,
-            "ep_budget_steps": self._ep_budget_steps,
-        })
+        # Delegates to self.adv (the same gate used at eval time), using the
+        # JOINT view across all compromised agents for accurate onset detection.
+        attacked, _score = self.adv.should_attack_joint(
+            states, self.trainable_indices, self.trainable_indices[0] if self.trainable_indices else 0)
 
         if not attacked:
             return adv_states, transitions  # clean pass-through, no transitions logged
-        self._ep_used += 1
 
         for topo_idx in self.trainable_indices:
             orig = np.asarray(states[topo_idx], dtype=np.float32)
@@ -413,65 +590,6 @@ class AdversaryTrainer:
         # global link state so the adversary can push multiple flows onto ONE shared
         # surviving link (the mechanism that actually reaches the damage ceiling).
         return adv_states, transitions
-
-    # -- (B) critical-state scoring ----------------------------------------
-    def _critical_score(self, states: List[np.ndarray]) -> float:
-        """Higher = more worth attacking right now. Only used when
-        cfg.timing_budget is set and timing_mode uses the quantile gate."""
-        if self.cfg.timing_budget is None:
-            return 0.0
-        scores = []
-        for topo_idx in self.trainable_indices:
-            obs = np.asarray(states[topo_idx], dtype=np.float32)
-            if self.cfg.timing_score_metric == "q_saliency":
-                o = torch.as_tensor(obs, device=self.device).unsqueeze(0)
-                with torch.no_grad():
-                    zero = torch.zeros_like(o)
-                    q_clean = self.critic(o, zero)
-                    q_pert = self.critic(o, self.actor(o))
-                scores.append(float((q_pert - q_clean).abs().item()))
-            else:  # "utilization" -- cheap proxy, no forward pass needed
-                if self.adv.bandwidth_indices is not None:
-                    scores.append(float(obs[self.adv.bandwidth_indices].max()))
-                else:
-                    scores.append(float(obs.max()))
-        return max(scores) if scores else 0.0
-
-    def _quantile_gate(self, score: float) -> bool:
-        """Original adaptive-threshold L0 gate. Attacks the top
-        (1 - timing_budget) fraction of observed critical-state scores,
-        tracked against a rolling window."""
-        self._score_hist.append(score)
-        if len(self._score_hist) < max(10, self.cfg.timing_window // 4):
-            threshold = 0.0  # not enough history yet -> attack to seed the buffer
-        else:
-            q = max(0.0, min(1.0, 1.0 - self.cfg.timing_budget))
-            threshold = float(np.quantile(self._score_hist, q))
-        return score >= threshold
-
-    def _should_attack(self, score: float) -> bool:
-        """(B) L0 gate combining an episode budget with either the quantile
-        critical-state gate, the event-driven congestion/failure gate, or both."""
-        if self.cfg.timing_budget is None:
-            return True  # gate disabled -> attack every step (original behaviour)
-
-        if self._ep_used >= self._ep_budget_steps:
-            return False  # budget for this episode is exhausted
-
-        mode = self.cfg.timing_mode
-        event_hit = False
-        if mode in ("event", "both"):
-            event_hit = self.event_timer.update_and_check(
-                self._cur_step_in_ep, self._pending_states, self.trainable_indices,
-                self.adv.bandwidth_indices, self._last_loss_frac,
-                ground_truth_failure=self._last_ground_truth_failure)
-            if mode == "event":
-                return event_hit
-
-        quantile_hit = self._quantile_gate(score)
-        if mode == "both":
-            return quantile_hit or event_hit
-        return quantile_hit
 
     def _victim_actions(self, states: List[np.ndarray]):
         t_states = [states[i] for i in self.trainable_indices]
@@ -502,11 +620,23 @@ class AdversaryTrainer:
             for tp, p in zip(target.parameters(), online.parameters()):
                 tp.mul_(1 - self.cfg.tau).add_(self.cfg.tau * p)
 
+    @staticmethod
+    def _write_rows_csv(path: str, rows: List[Dict]):
+        """Plain csv.DictWriter -- no pandas required."""
+        if not rows:
+            return
+        fieldnames = list(rows[0].keys())
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
     def train(self, n_episodes: int, t_per_ep: int = 256,
               offered_load_factor: float = 2.0, n_link_failures: int = 0,
               failure_injector: Optional[Callable[["object", int], Optional[Sequence]]] = None,
               log_every: int = 10, log_dir: Optional[str] = None) -> Dict:
-        """Main SA-MDP loop. Returns a small history dict for plotting.
+        """Main SA-MDP loop. Returns a small history dict for plotting -- all
+        JSON-serialisable (plain lists/dicts, no DataFrames).
 
         `failure_injector(env, step) -> failed_links | None` is an optional
         callable wired in at the call site (e.g. the runner's existing failure
@@ -515,8 +645,7 @@ class AdversaryTrainer:
         against the loss-spike proxy in the trigger log (see the
         `ground_truth_failure` column). If `n_link_failures > 0` but no
         `failure_injector` is supplied, ground truth is left unavailable and
-        only the proxy signal drives the post-failure gate (previous
-        behaviour, now made explicit rather than silently a no-op).
+        only the proxy signal drives the post-failure gate.
 
         If `log_dir` is given:
           - "event"/"both" modes also write f"{log_dir}/trigger_log_ep{ep:04d}.csv"
@@ -538,35 +667,28 @@ class AdversaryTrainer:
             history["trigger_logs"] = []
 
         for ep in range(n_episodes):
-            self._cur_episode = ep  # tag every attack-log row with the right episode
             self.env.engine.reset_with_load(offered_load_factor=offered_load_factor)
-            # (B) reset the per-episode L0 budget so timing gates apply fresh
-            # each episode (budget is a FRACTION of t_per_ep, not cumulative).
-            if self.cfg.timing_budget is not None:
-                self._ep_budget_steps = max(1, int(np.ceil(self.cfg.timing_budget * t_per_ep)))
-                self._ep_used = 0
-            self.event_timer.reset()
-            self._last_loss_frac = 0.0
-            self._last_ground_truth_failure = False
+            # (B) reset the per-episode L0 budget + event timer on self.adv --
+            # the single shared gate used by both training and eval.
+            self.adv.new_episode(episode_idx=ep, t_per_ep=t_per_ep)
             states = [self.env.engine.get_state(h) for h in self.hosts]
             ep_reward = 0.0
             explore = self._step < self.cfg.warmup_steps or True  # keep light noise
             for t in range(t_per_ep):
-                self._cur_step_in_ep = t
-
                 # ground-truth failure injection (if a real injector is wired in)
                 gt_failure = False
                 if n_link_failures and failure_injector is not None:
                     injected = failure_injector(self.env, t)
                     gt_failure = bool(injected)
-                self._last_ground_truth_failure = gt_failure
+                self.adv.update_step_context(loss_frac=self.adv._last_loss_frac,
+                                              ground_truth_failure=gt_failure)
 
                 adv_states, transitions = self._attack_states(states, explore)
                 actions = self._victim_actions(adv_states)
                 next_states, _rewards, info = self.env.step(actions)
                 # SA-MDP reward: victim per-step packet loss fraction (attacker gain)
                 loss_frac = float(info.get("packet_loss_rate", 0.0)) / 100.0
-                self._last_loss_frac = loss_frac  # feeds the event timer next step
+                self.adv._last_loss_frac = loss_frac  # feeds the event timer next step
                 for (topo_idx, clean_obs, applied_delta) in transitions:
                     self.buffer.push(clean_obs, applied_delta, loss_frac,
                                       np.asarray(next_states[topo_idx], np.float32), 0.0)
@@ -579,38 +701,32 @@ class AdversaryTrainer:
             history["victim_pdr"].append(pdr)
             history["attack_loss_reward"].append(ep_reward / t_per_ep)
 
-            ep_log = pd.DataFrame()
-            if self.cfg.timing_mode in ("event", "both"):
-                ep_log = self.event_timer.log_df()
-                ep_log["episode"] = ep
-                self.trigger_logs.append(ep_log)
-                history["trigger_logs"].append(ep_log)
+            ep_trigger_log: List[Dict] = []
+            if self.cfg.timing_mode in ("event", "both") and self.adv.event_timer is not None:
+                ep_trigger_log = [dict(row, episode=ep) for row in self.adv.event_timer.log]
+                self.trigger_logs.append(ep_trigger_log)
+                history["trigger_logs"].append(ep_trigger_log)
                 if log_dir is not None:
-                    import os
                     os.makedirs(log_dir, exist_ok=True)
-                    ep_log.to_csv(f"{log_dir}/trigger_log_ep{ep:04d}.csv", index=False)
+                    self._write_rows_csv(f"{log_dir}/trigger_log_ep{ep:04d}.csv", ep_trigger_log)
 
-            # mode-agnostic attack log: always written if log_dir is set, so
-            # you can see which episode(s) an attack fired in even under pure
-            # "quantile" mode (where trigger_logs above stays empty).
-            if log_dir is not None:
-                import os
-                os.makedirs(log_dir, exist_ok=True)
-                ep_attack_rows = [r for r in self.attack_log if r["episode"] == ep]
-                pd.DataFrame(ep_attack_rows).to_csv(
-                    f"{log_dir}/attack_log_ep{ep:04d}.csv", index=False)
-
-            # per-episode attack breakdown (mode-agnostic; always available)
-            ep_attack_rows = [r for r in self.attack_log if r["episode"] == ep]
+            # mode-agnostic attack log rows for this episode
+            ep_attack_rows = [r for r in self.adv.attack_log if r["episode"] == ep]
             ep_attacked_steps = sum(1 for r in ep_attack_rows if r["attacked"])
+
+            if log_dir is not None:
+                os.makedirs(log_dir, exist_ok=True)
+                self._write_rows_csv(f"{log_dir}/attack_log_ep{ep:04d}.csv", ep_attack_rows)
 
             if ep % log_every == 0:
                 msg = (f"[adv] ep {ep:4d} victim PDR {pdr:6.2f}% "
                        f"mean step-loss reward {ep_reward / t_per_ep:.4f} "
                        f"attacked {ep_attacked_steps}/{len(ep_attack_rows)} steps")
-                if self.cfg.timing_mode in ("event", "both") and not ep_log.empty:
-                    counts = ep_log["trigger"].value_counts().to_dict()
-                    counts.pop("none", None)
+                if ep_trigger_log:
+                    counts: Dict[str, int] = {}
+                    for row in ep_trigger_log:
+                        if row["trigger"] != "none":
+                            counts[row["trigger"]] = counts.get(row["trigger"], 0) + 1
                     if counts:
                         breakdown = ", ".join(f"{k}={v}" for k, v in counts.items())
                         msg += f" [{breakdown}]"
@@ -621,51 +737,86 @@ class AdversaryTrainer:
         print("Attack timing summary (all episodes)")
         print("=" * 60)
         summary = self.attacks_per_episode()
-        if not summary.empty:
-            print(summary.to_string(index=False))
-            print(f"\nTotal steps attacked: {int(summary['steps_attacked'].sum())} / "
-                  f"{int(summary['total_steps'].sum())} "
-                  f"({summary['steps_attacked'].sum() / summary['total_steps'].sum():.1%})")
+        if summary:
+            for row in summary:
+                print(f"  ep {row['episode']:4d}  attacked {row['steps_attacked']:4d}/"
+                      f"{row['total_steps']:4d}  ({row['attacked_fraction']:.1%})  "
+                      f"budget={row['ep_budget_steps']}")
+            total_attacked = sum(r["steps_attacked"] for r in summary)
+            total_steps = sum(r["total_steps"] for r in summary)
+            if total_steps:
+                print(f"\nTotal steps attacked: {total_attacked} / {total_steps} "
+                      f"({total_attacked / total_steps:.1%})")
+
         if self.cfg.timing_mode in ("event", "both"):
-            trig_df = self.all_trigger_logs()
-            if not trig_df.empty:
+            all_trig = self.all_trigger_logs()
+            if all_trig:
                 print("\nTrigger breakdown (all episodes):")
-                print(trig_df["trigger"].value_counts().to_string())
-                if trig_df["ground_truth_failure"].any() or trig_df["proxy_failure_fired"].any():
-                    tp = int((trig_df.ground_truth_failure & trig_df.proxy_failure_fired).sum())
-                    fn = int((trig_df.ground_truth_failure & ~trig_df.proxy_failure_fired).sum())
-                    fp = int((~trig_df.ground_truth_failure & trig_df.proxy_failure_fired).sum())
+                trig_counts: Dict[str, int] = {}
+                tp = fn = fp = 0
+                has_failure_data = False
+                for row in all_trig:
+                    trig_counts[row["trigger"]] = trig_counts.get(row["trigger"], 0) + 1
+                    gt, proxy = row["ground_truth_failure"], row["proxy_failure_fired"]
+                    if gt or proxy:
+                        has_failure_data = True
+                    if gt and proxy:
+                        tp += 1
+                    elif gt and not proxy:
+                        fn += 1
+                    elif not gt and proxy:
+                        fp += 1
+                for k, v in trig_counts.items():
+                    print(f"  {k}: {v}")
+                if has_failure_data:
                     print(f"\nFailure-proxy vs ground truth: TP={tp} FN={fn} FP={fp}")
         print("=" * 60 + "\n")
 
         return history
 
-    def all_trigger_logs(self) -> pd.DataFrame:
-        """Concatenate every episode's trigger log collected so far into one
-        DataFrame -- handy for a single budget-vs-damage / trigger-type analysis."""
-        if not self.trigger_logs:
-            return pd.DataFrame()
-        return pd.concat(self.trigger_logs, ignore_index=True)
+    def all_trigger_logs(self) -> List[Dict]:
+        """Flatten every episode's trigger log collected so far into one list
+        of dicts -- handy for a single budget-vs-damage / trigger-type
+        analysis. JSON-serialisable."""
+        flat: List[Dict] = []
+        for ep_log in self.trigger_logs:
+            flat.extend(ep_log)
+        return flat
 
-    def attack_log_df(self) -> pd.DataFrame:
-        """Mode-agnostic per-step attack decision log (works for quantile,
-        event, and both modes). Columns: episode, step, attacked, score,
-        timing_mode, ep_used, ep_budget_steps."""
-        return pd.DataFrame(self.attack_log)
-
-    def attacks_per_episode(self) -> pd.DataFrame:
+    def attacks_per_episode(self) -> List[Dict]:
         """Convenience summary: how many steps were attacked in each episode,
-        and what fraction of that episode's budget was used."""
-        df = self.attack_log_df()
-        if df.empty:
-            return df
-        summary = (df.groupby("episode")
-                     .agg(steps_attacked=("attacked", "sum"),
-                          total_steps=("attacked", "count"),
-                          ep_budget_steps=("ep_budget_steps", "max"))
-                     .reset_index())
-        summary["attacked_fraction"] = summary["steps_attacked"] / summary["total_steps"]
+        and what fraction of that episode's budget was used. Returns a plain
+        list of per-episode dicts, JSON-serialisable. Reads from
+        self.adv.attack_log (the single shared gate log)."""
+        by_episode: Dict[int, Dict] = {}
+        for row in self.adv.attack_log:
+            ep = row["episode"]
+            entry = by_episode.setdefault(ep, {
+                "episode": ep, "steps_attacked": 0, "total_steps": 0,
+                "ep_budget_steps": row["ep_budget_steps"],
+            })
+            entry["total_steps"] += 1
+            if row["attacked"]:
+                entry["steps_attacked"] += 1
+            entry["ep_budget_steps"] = max(entry["ep_budget_steps"], row["ep_budget_steps"])
+        summary = []
+        for ep in sorted(by_episode):
+            entry = by_episode[ep]
+            entry["attacked_fraction"] = (
+                entry["steps_attacked"] / entry["total_steps"] if entry["total_steps"] else 0.0
+            )
+            summary.append(entry)
         return summary
+
+    def save_logs_json(self, path: str):
+        """Dump attack_log + all_trigger_logs to a single JSON file -- both
+        are already plain lists/dicts, so this is a direct json.dump."""
+        payload = {
+            "attack_log": self.adv.attack_log,
+            "trigger_logs": self.all_trigger_logs(),
+        }
+        with open(path, "w") as f:
+            json.dump(payload, f, indent=2)
 
     def save(self, path: str):
         self.adv.save(path)
