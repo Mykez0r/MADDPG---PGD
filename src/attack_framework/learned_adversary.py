@@ -26,8 +26,18 @@ the intended research contributions:
       AdversaryTrainer._attack_states_joint and
       LearnedObservationAdversary.perturb_joint / generate_adversarial_state.
   (B) STRATEGICALLY-TIMED / critical-state attacks  (spend an L0 budget only at the
-      high-leverage moments — congestion onset, immediately post-failure). Still
-      TODO(student) — see the marker in AdversaryTrainer._attack_states.
+      high-leverage moments — congestion onset, immediately post-failure).
+      IMPLEMENTED — set AdversaryConfig.timing_budget=<fraction> (`--timing-budget`).
+      A TimingGate scores every step by the network's own current max link
+      utilisation (this is exactly where congestion onset and post-failure
+      pressure show up — see the FGSM fail4/fail6 sweep, where robustness
+      collapses once redundancy is thin and surviving links saturate) and only
+      attacks the highest-scoring `timing_budget` fraction of steps, calibrated
+      online against a rolling window of recent scores so the realised attack
+      rate tracks the budget without needing foresight into the rest of the
+      episode. Skipped steps pass the clean state through untouched and push no
+      replay transition. See TimingGate, AdversaryTrainer._attack_states, and
+      LearnedObservationAdversary.generate_adversarial_state.
 
 Eval: `LearnedObservationAdversary` exposes `generate_adversarial_state(...)` with
 the SAME signature as FGSMAttackFramework, so a trained adversary drops straight
@@ -38,6 +48,7 @@ Run the trainer with  tools/train_adversary.py  (wires up env + frozen victim).
 """
 from __future__ import annotations
 
+import logging
 import random
 from collections import deque
 from dataclasses import dataclass, field
@@ -47,6 +58,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────── networks ────────────────────────────────────────
@@ -119,6 +132,48 @@ class ReplayBuffer:
 
     def __len__(self):
         return len(self.buf)
+
+
+# ─────────────────────────── timing gate ──────────────────────────────────────
+class TimingGate:
+    """(B) L0-budget timing gate: attack only the `budget` fraction of steps with
+    the highest critical-state score, so a limited attack budget is spent on
+    high-leverage moments (congestion onset, immediately post-failure) instead of
+    spread thin over every step.
+
+    Score = current max link utilisation across the whole topology — congestion
+    and thinned redundancy (post-failure) both surface there directly. The
+    trigger threshold is the (1 - budget) quantile of a rolling window of scores,
+    recalibrated online after every step, so the realised attack rate tracks
+    `budget` over time without needing to see the rest of the episode in advance.
+    The first `min_history` steps always fire, to seed the window before the
+    quantile means anything.
+    """
+
+    def __init__(self, budget: float, window: int = 1000, min_history: int = 100):
+        self.budget = float(budget)
+        self.min_history = min_history
+        self.history: deque = deque(maxlen=window)
+
+    @staticmethod
+    def score(network_engine) -> float:
+        topo = network_engine.topology
+        edges = topo.graph.edges()
+        return max((topo.get_util(u, v) for u, v in edges), default=0.0)
+
+    def should_attack(self, network_engine) -> Tuple[bool, float, float]:
+        """Returns (fire, score, threshold). `threshold` is computed from history
+        BEFORE this step's score is appended, so a step never influences its own
+        cutoff."""
+        s = self.score(network_engine)
+        if len(self.history) < self.min_history:
+            threshold = 0.0
+            fire = True
+        else:
+            threshold = float(np.quantile(self.history, 1.0 - self.budget))
+            fire = s >= threshold
+        self.history.append(s)
+        return fire, s, threshold
 
 
 # ─────────────────────────── config ──────────────────────────────────────────
@@ -202,6 +257,13 @@ class LearnedObservationAdversary:
         self._cache_step = None
         self._cache_blocks: Optional[List[np.ndarray]] = None
 
+        # (B) timing gate: one fire/skip decision per timestep, shared by every
+        # compromised agent that calls in during that step (independent mode
+        # included — see the cache in generate_adversarial_state)
+        self.timing_gate = TimingGate(cfg.timing_budget) if cfg.timing_budget else None
+        self._gate_step = None
+        self._gate_fire = True
+
         # stats block kept for API parity with FGSMAttackFramework
         self.attack_stats: Dict = {"total_attacks": 0, "attack_success_count": 0}
 
@@ -251,7 +313,29 @@ class LearnedObservationAdversary:
         step. In independent mode this acts on `state` alone. In coordinated
         mode `network_engine` (the runner passes `env.engine`) is required —
         it is used to reconstruct the other compromised agents' observations
-        for this same step so a genuinely joint delta can be computed."""
+        for this same step so a genuinely joint delta can be computed.
+
+        (B) If cfg.timing_budget is set, a TimingGate decides once per timestep
+        (cached across every compromised agent's call this step, coordinate or
+        not) whether this is a high-leverage enough moment to spend the attack
+        budget on; skipped steps return the CLEAN state untouched."""
+        if self.timing_gate is not None:
+            if network_engine is None:
+                raise ValueError("cfg.timing_budget requires network_engine to "
+                                  "score the critical-state signal")
+            step = getattr(network_engine, "time_step", None)
+            if step is None or step != self._gate_step:
+                fire, score, threshold = self.timing_gate.should_attack(network_engine)
+                self._gate_step = step
+                self._gate_fire = fire
+                if fire:
+                    logger.info(
+                        "[adv-timing] eval step=%s FIRE  max_link_util=%.3f >= "
+                        "threshold=%.3f (top %.0f%% of recent steps) — congestion/"
+                        "post-failure moment, spending attack budget here",
+                        step, score, threshold, self.timing_gate.budget * 100)
+            if not self._gate_fire:
+                return np.asarray(state, dtype=np.float32)
         if not self.coordinate:
             return self.perturb(state)
         if network_engine is None:
@@ -335,6 +419,11 @@ class AdversaryTrainer:
         self.buffer = ReplayBuffer()
         self._step = 0
 
+        # (B) timing gate: shared across coordinate/independent, one decision
+        # per environment step (see _attack_states)
+        self.timing_gate = TimingGate(cfg.timing_budget) if cfg.timing_budget else None
+        self._current_episode = 0
+
     # -- perturb every compromised agent's observation this step -----------
     def _attack_states(self, states: List[np.ndarray], explore: bool
                        ) -> Tuple[List[np.ndarray], List[Tuple]]:
@@ -344,10 +433,20 @@ class AdversaryTrainer:
         list of every topo_idx in the coordinated group when cfg.coordinate
         is set; link_state is the GLOBAL link vector in that case, else None.
         """
-        # TODO(student B — timing): if cfg.timing_budget is set, decide HERE whether
-        # to spend budget on this step using a critical-state score (e.g. max link
-        # utilisation, or |Q(clean)-Q(perturbed)| saliency). Skip perturbation on
-        # low-leverage steps and only push transitions for steps you actually attack.
+        # (B) timing gate: spend the L0 budget only on high-leverage steps. A
+        # skipped step returns the CLEAN states untouched and pushes NO replay
+        # transition — the buffer only ever sees steps the adversary chose to
+        # act on.
+        if self.timing_gate is not None:
+            fire, score, threshold = self.timing_gate.should_attack(self.env.engine)
+            if not fire:
+                return list(states), []
+            logger.info(
+                "[adv-timing] ep=%d step=%d FIRE  max_link_util=%.3f >= "
+                "threshold=%.3f (top %.0f%% of recent steps) — congestion/"
+                "post-failure moment, spending attack budget here",
+                self._current_episode, self.env.engine.time_step, score, threshold,
+                self.timing_gate.budget * 100)
         if self.cfg.coordinate:
             return self._attack_states_joint(states, explore)
         return self._attack_states_independent(states, explore)
@@ -437,6 +536,7 @@ class AdversaryTrainer:
         """Main SA-MDP loop. Returns a small history dict for plotting."""
         history = {"episode": [], "victim_pdr": [], "attack_loss_reward": []}
         for ep in range(n_episodes):
+            self._current_episode = ep
             self.env.engine.reset_with_load(offered_load_factor=offered_load_factor)
             if n_link_failures:
                 # reuse the runner's failure injector at the call site if you want
