@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import logging
 import random
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -60,6 +60,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
+
+
+def _log_timing_summary(tag: str, counts: "Counter", budget: float, window: int) -> None:
+    """(B) Flush one aggregated line for a window of episodes' worth of timing-gate
+    decisions instead of logging every fire — tallies WHEN (fired/skipped out of
+    total steps) and WHY (congestion severity band of the fired steps), then
+    resets `counts` for the next window."""
+    fired = counts.get("fired", 0)
+    total = fired + counts.get("skipped", 0)
+    if total == 0:
+        return
+    logger.info(
+        "%s last %d eps: attacked %d/%d steps (%.1f%%, budget %.0f%%)  "
+        "reasons: near-saturation=%d  high-congestion=%d  at-threshold=%d",
+        tag, window, fired, total, 100.0 * fired / total, budget * 100,
+        counts.get("near-saturation", 0), counts.get("high-congestion", 0),
+        counts.get("at-threshold", 0))
+    counts.clear()
 
 
 # ─────────────────────────── networks ────────────────────────────────────────
@@ -155,11 +173,22 @@ class TimingGate:
         self.min_history = min_history
         self.history: deque = deque(maxlen=window)
 
+    # score bands for the "why" breakdown in the periodic summary — coarse
+    # severity of the congestion the gate reacted to, not a precise cause
+    _SEVERITY_BANDS = (("near-saturation", 0.90), ("high-congestion", 0.75))
+
     @staticmethod
     def score(network_engine) -> float:
         topo = network_engine.topology
         edges = topo.graph.edges()
         return max((topo.get_util(u, v) for u, v in edges), default=0.0)
+
+    @classmethod
+    def severity(cls, score: float) -> str:
+        for label, cutoff in cls._SEVERITY_BANDS:
+            if score >= cutoff:
+                return label
+        return "at-threshold"
 
     def should_attack(self, network_engine) -> Tuple[bool, float, float]:
         """Returns (fire, score, threshold). `threshold` is computed from history
@@ -259,10 +288,15 @@ class LearnedObservationAdversary:
 
         # (B) timing gate: one fire/skip decision per timestep, shared by every
         # compromised agent that calls in during that step (independent mode
-        # included — see the cache in generate_adversarial_state)
+        # included — see the cache in generate_adversarial_state). Counts are
+        # summarised every 10 (eval-)episodes instead of logged per fire —
+        # episode boundaries are inferred from network_engine.time_step wrapping.
         self.timing_gate = TimingGate(cfg.timing_budget) if cfg.timing_budget else None
         self._gate_step = None
         self._gate_fire = True
+        self._timing_counts: Counter = Counter()
+        self._timing_episode = 0
+        self._timing_last_step = None
 
         # stats block kept for API parity with FGSMAttackFramework
         self.attack_stats: Dict = {"total_attacks": 0, "attack_success_count": 0}
@@ -318,22 +352,28 @@ class LearnedObservationAdversary:
         (B) If cfg.timing_budget is set, a TimingGate decides once per timestep
         (cached across every compromised agent's call this step, coordinate or
         not) whether this is a high-leverage enough moment to spend the attack
-        budget on; skipped steps return the CLEAN state untouched."""
+        budget on; skipped steps return the CLEAN state untouched. Fire/skip
+        counts (and why — the congestion severity band) are tallied and flushed
+        as one summary line every 10 eval episodes, not logged per step."""
         if self.timing_gate is not None:
             if network_engine is None:
                 raise ValueError("cfg.timing_budget requires network_engine to "
                                   "score the critical-state signal")
             step = getattr(network_engine, "time_step", None)
             if step is None or step != self._gate_step:
+                if self._timing_last_step is not None and step is not None \
+                        and step < self._timing_last_step:
+                    self._timing_episode += 1
+                    if self._timing_episode % 10 == 0:
+                        _log_timing_summary("[adv-timing][eval]", self._timing_counts,
+                                            self.timing_gate.budget, 10)
+                self._timing_last_step = step
                 fire, score, threshold = self.timing_gate.should_attack(network_engine)
                 self._gate_step = step
                 self._gate_fire = fire
+                self._timing_counts["fired" if fire else "skipped"] += 1
                 if fire:
-                    logger.info(
-                        "[adv-timing] eval step=%s FIRE  max_link_util=%.3f >= "
-                        "threshold=%.3f (top %.0f%% of recent steps) — congestion/"
-                        "post-failure moment, spending attack budget here",
-                        step, score, threshold, self.timing_gate.budget * 100)
+                    self._timing_counts[self.timing_gate.severity(score)] += 1
             if not self._gate_fire:
                 return np.asarray(state, dtype=np.float32)
         if not self.coordinate:
@@ -420,9 +460,11 @@ class AdversaryTrainer:
         self._step = 0
 
         # (B) timing gate: shared across coordinate/independent, one decision
-        # per environment step (see _attack_states)
+        # per environment step (see _attack_states). Counts are summarised every
+        # log_every episodes in train() instead of logged per fire.
         self.timing_gate = TimingGate(cfg.timing_budget) if cfg.timing_budget else None
         self._current_episode = 0
+        self._timing_counts: Counter = Counter()
 
     # -- perturb every compromised agent's observation this step -----------
     def _attack_states(self, states: List[np.ndarray], explore: bool
@@ -436,17 +478,14 @@ class AdversaryTrainer:
         # (B) timing gate: spend the L0 budget only on high-leverage steps. A
         # skipped step returns the CLEAN states untouched and pushes NO replay
         # transition — the buffer only ever sees steps the adversary chose to
-        # act on.
+        # act on. Fire/skip + why (severity band) are tallied and flushed as one
+        # summary line every log_every episodes in train(), not logged per step.
         if self.timing_gate is not None:
             fire, score, threshold = self.timing_gate.should_attack(self.env.engine)
+            self._timing_counts["fired" if fire else "skipped"] += 1
             if not fire:
                 return list(states), []
-            logger.info(
-                "[adv-timing] ep=%d step=%d FIRE  max_link_util=%.3f >= "
-                "threshold=%.3f (top %.0f%% of recent steps) — congestion/"
-                "post-failure moment, spending attack budget here",
-                self._current_episode, self.env.engine.time_step, score, threshold,
-                self.timing_gate.budget * 100)
+            self._timing_counts[self.timing_gate.severity(score)] += 1
         if self.cfg.coordinate:
             return self._attack_states_joint(states, explore)
         return self._attack_states_independent(states, explore)
@@ -573,6 +612,9 @@ class AdversaryTrainer:
             if ep % log_every == 0:
                 print(f"[adv] ep {ep:4d}  victim PDR {pdr:6.2f}%  "
                       f"mean step-loss reward {ep_reward / t_per_ep:.4f}")
+                if self.timing_gate is not None:
+                    _log_timing_summary("[adv-timing]", self._timing_counts,
+                                        self.timing_gate.budget, log_every)
         return history
 
     def save(self, path: str):
