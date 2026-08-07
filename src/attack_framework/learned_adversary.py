@@ -16,12 +16,18 @@ Design (mirrors the paper's threat model exactly, so results stay comparable):
     weights except through forward passes at attack time (grey-box); set
     `white_box=True` to also let the DDPG critic condition on victim internals.
 
-Two extension points are stubbed with TODO(student) — they are the parts that make
-the attack *specific to this routing scenario* and are the intended research
-contributions:
-  (A) COORDINATED multi-agent perturbation  (steer flows onto a SHARED bottleneck)
+Two extension points make the attack *specific to this routing scenario* and are
+the intended research contributions:
+  (A) COORDINATED multi-agent perturbation  (steer flows onto a SHARED bottleneck).
+      IMPLEMENTED — set AdversaryConfig.coordinate=True (`--coordinate`). A single
+      actor consumes the concatenation of every compromised agent's observation
+      and emits one joint delta; the critic additionally conditions on the GLOBAL
+      link state (NetworkEngine.get_central_state). See
+      AdversaryTrainer._attack_states_joint and
+      LearnedObservationAdversary.perturb_joint / generate_adversarial_state.
   (B) STRATEGICALLY-TIMED / critical-state attacks  (spend an L0 budget only at the
-      high-leverage moments — congestion onset, immediately post-failure)
+      high-leverage moments — congestion onset, immediately post-failure). Still
+      TODO(student) — see the marker in AdversaryTrainer._attack_states.
 
 Eval: `LearnedObservationAdversary` exposes `generate_adversarial_state(...)` with
 the SAME signature as FGSMAttackFramework, so a trained adversary drops straight
@@ -60,33 +66,56 @@ class AdversaryActor(nn.Module):
 
 
 class AdversaryCritic(nn.Module):
-    """Q(obs, delta) for the DDPG update of the adversary."""
+    """Q(obs, delta[, link_state]) for the DDPG update of the adversary.
 
-    def __init__(self, obs_dim: int, hidden: int = 256):
+    link_state_dim > 0 conditions the critic on the GLOBAL link state (see
+    NetworkEngine.get_central_state: per-edge available bandwidth + per-agent
+    modal destination) in addition to the observation/delta it is scoring.
+    This is what lets a coordinated adversary (cfg.coordinate=True) learn to
+    push several flows onto ONE shared link that is about to bottleneck,
+    rather than judging each agent's perturbation against its own local view.
+    """
+
+    def __init__(self, obs_dim: int, hidden: int = 256, link_state_dim: int = 0):
         super().__init__()
+        self.link_state_dim = link_state_dim
         self.net = nn.Sequential(
-            nn.Linear(obs_dim * 2, hidden), nn.ReLU(),
+            nn.Linear(obs_dim * 2 + link_state_dim, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
             nn.Linear(hidden, 1),
         )
 
-    def forward(self, obs: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
-        return self.net(torch.cat([obs, delta], dim=-1))
+    def forward(self, obs: torch.Tensor, delta: torch.Tensor,
+                link_state: Optional[torch.Tensor] = None) -> torch.Tensor:
+        parts = [obs, delta]
+        if self.link_state_dim:
+            if link_state is None:
+                raise ValueError("critic was built with link_state_dim > 0 but "
+                                  "forward() got no link_state")
+            parts.append(link_state)
+        return self.net(torch.cat(parts, dim=-1))
 
 
 # ─────────────────────────── replay ──────────────────────────────────────────
 class ReplayBuffer:
+    """Transitions optionally carry the GLOBAL link state (coordinated mode
+    only; None in independent per-agent mode) alongside the usual SARS'd
+    tuple, so the critic can condition on it during `_update`."""
+
     def __init__(self, capacity: int = 200_000):
         self.buf: deque = deque(maxlen=capacity)
 
-    def push(self, obs, delta, reward, next_obs, done):
-        self.buf.append((obs, delta, reward, next_obs, done))
+    def push(self, obs, delta, reward, next_obs, done, link_state=None, next_link_state=None):
+        self.buf.append((obs, delta, reward, next_obs, done, link_state, next_link_state))
 
     def sample(self, batch: int, device):
         idx = random.sample(range(len(self.buf)), batch)
-        obs, delta, r, nobs, done = zip(*(self.buf[i] for i in idx))
+        obs, delta, r, nobs, done, ls, nls = zip(*(self.buf[i] for i in idx))
         t = lambda x: torch.as_tensor(np.asarray(x), dtype=torch.float32, device=device)
-        return (t(obs), t(delta), t(r).unsqueeze(-1), t(nobs), t(done).unsqueeze(-1))
+        link_state = t(ls) if ls[0] is not None else None
+        next_link_state = t(nls) if nls[0] is not None else None
+        return (t(obs), t(delta), t(r).unsqueeze(-1), t(nobs), t(done).unsqueeze(-1),
+                link_state, next_link_state)
 
     def __len__(self):
         return len(self.buf)
@@ -118,17 +147,61 @@ class LearnedObservationAdversary:
     FGSMAttackFramework, so it drops into `_attack_episodes` unchanged. Set the
     runner's `attack_framework` to an instance of this to evaluate a learned
     adversary with the existing damage-ceiling / random-control / flip metrics.
+
+    Coordinated mode (cfg.coordinate=True, see AdversaryConfig): the runner's
+    call site is still per-agent (`generate_adversarial_state` is called once
+    per compromised host per step, in `_attack_episodes`'s per-agent loop), so
+    this class cannot receive the whole group's observations in one call. It
+    reconstructs them itself via `network_engine.get_state(host)` for every
+    host in `group_hosts`, runs the SINGLE joint actor once per timestep, and
+    hands each caller its own slice of the resulting joint delta. Every
+    compromised agent in a given step therefore acts on the SAME joint
+    decision — a coordinated attack — without the eval call site changing.
+    `group_hosts` must be ordered so position i is the MADDPG agent_index the
+    runner will pass for host i (i.e. the same order as trainable_indices).
     """
 
     def __init__(self, obs_dim: int, cfg: AdversaryConfig,
-                 bandwidth_indices: Optional[Sequence[int]] = None):
+                 bandwidth_indices: Optional[Sequence[int]] = None,
+                 group_hosts: Optional[Sequence[str]] = None):
         self.cfg = cfg
         self.epsilon = cfg.epsilon           # runner sets this per case; kept in sync
         self.attack_type = "learned"
         self.device = torch.device(cfg.device)
-        self.actor = AdversaryActor(obs_dim, cfg.hidden).to(self.device)
+        self.coordinate = bool(cfg.coordinate)
+        self.per_agent_obs_dim = obs_dim
+
+        if self.coordinate:
+            if not group_hosts:
+                raise ValueError("cfg.coordinate=True requires group_hosts (the "
+                                  "ordered list of compromised agents' hosts) so the "
+                                  "adversary knows what joint observation to "
+                                  "reconstruct at eval time")
+            self.group_hosts = list(group_hosts)
+        else:
+            self.group_hosts = None
+        self.group_size = len(self.group_hosts) if self.coordinate else 1
+        self.actor_obs_dim = obs_dim * self.group_size
+        self.actor = AdversaryActor(self.actor_obs_dim, cfg.hidden).to(self.device)
         self.actor.eval()
-        self.bandwidth_indices = list(bandwidth_indices) if bandwidth_indices else None
+
+        local_bw = list(bandwidth_indices) if bandwidth_indices else None
+        if local_bw is not None and self.group_size > 1:
+            # tile the per-agent bandwidth slots across every block of the joint vector
+            self.bandwidth_indices = np.concatenate([
+                np.asarray(local_bw, dtype=np.int64) + k * obs_dim
+                for k in range(self.group_size)
+            ])
+        elif local_bw is not None:
+            self.bandwidth_indices = np.asarray(local_bw, dtype=np.int64)
+        else:
+            self.bandwidth_indices = None
+
+        # per-timestep cache so N compromised agents in the same group cost ONE
+        # joint actor pass per step, not N (keyed on the engine's own step counter)
+        self._cache_step = None
+        self._cache_blocks: Optional[List[np.ndarray]] = None
+
         # stats block kept for API parity with FGSMAttackFramework
         self.attack_stats: Dict = {"total_attacks": 0, "attack_success_count": 0}
 
@@ -143,27 +216,68 @@ class LearnedObservationAdversary:
         return adv.astype(np.float32)
 
     @torch.no_grad()
+    def _actor_delta(self, joint_obs: np.ndarray) -> np.ndarray:
+        o = torch.as_tensor(joint_obs, device=self.device).unsqueeze(0)
+        return self.actor(o).squeeze(0).cpu().numpy()
+
+    @torch.no_grad()
     def perturb(self, state: np.ndarray) -> np.ndarray:
+        if self.coordinate:
+            raise RuntimeError("coordinated adversary: use generate_adversarial_state "
+                                "(network_engine + agent_index) or perturb_joint, not "
+                                "perturb() on a single agent's state")
         orig = np.asarray(state, dtype=np.float32)
-        o = torch.as_tensor(orig, device=self.device).unsqueeze(0)
-        delta = self.actor(o).squeeze(0).cpu().numpy() * self.epsilon
+        delta = self._actor_delta(orig) * self.epsilon
         return self._project(orig, orig + delta)
+
+    @torch.no_grad()
+    def perturb_joint(self, joint_states: Sequence[np.ndarray]) -> List[np.ndarray]:
+        """(A) Coordinated perturbation. `joint_states` are the CLEAN observations
+        of every agent in the group, in group order. All are perturbed from ONE
+        joint delta emitted by a single actor pass, so the adversary can trade off
+        pushing several agents' flows onto one shared surviving link rather than
+        optimising each agent's observation in isolation."""
+        blocks = [np.asarray(s, dtype=np.float32) for s in joint_states]
+        joint_orig = np.concatenate(blocks)
+        delta = self._actor_delta(joint_orig) * self.epsilon
+        applied = self._project(joint_orig, joint_orig + delta)
+        d = self.per_agent_obs_dim
+        return [applied[i * d:(i + 1) * d] for i in range(self.group_size)]
 
     def generate_adversarial_state(self, state, agent_network=None,
                                    network_engine=None, agent_index: int = 0,
                                    bandwidth_indices=None) -> np.ndarray:
-        """FGSM-compatible entry point. agent_network/engine are unused by the
-        grey-box adversary (it acts on the observation alone) but kept in the
-        signature so the runner call site does not change."""
-        return self.perturb(state)
+        """FGSM-compatible entry point: called once per compromised agent per
+        step. In independent mode this acts on `state` alone. In coordinated
+        mode `network_engine` (the runner passes `env.engine`) is required —
+        it is used to reconstruct the other compromised agents' observations
+        for this same step so a genuinely joint delta can be computed."""
+        if not self.coordinate:
+            return self.perturb(state)
+        if network_engine is None:
+            raise ValueError("coordinated adversary needs network_engine to "
+                              "reconstruct the other compromised agents' "
+                              "observations for this step")
+        step = getattr(network_engine, "time_step", None)
+        if step is None or step != self._cache_step:
+            joint_states = [network_engine.get_state(h) for h in self.group_hosts]
+            self._cache_blocks = self.perturb_joint(joint_states)
+            self._cache_step = step
+        return self._cache_blocks[agent_index]
 
     # -- persistence -------------------------------------------------------
     def save(self, path: str):
         torch.save({"actor": self.actor.state_dict(),
-                    "epsilon": self.cfg.epsilon}, path)
+                    "epsilon": self.cfg.epsilon,
+                    "coordinate": self.coordinate,
+                    "group_size": self.group_size,
+                    "per_agent_obs_dim": self.per_agent_obs_dim}, path)
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device)
+        if ckpt.get("group_size", self.group_size) != self.group_size:
+            raise ValueError(f"checkpoint group_size={ckpt.get('group_size')} does not "
+                              f"match this adversary's group_size={self.group_size}")
         self.actor.load_state_dict(ckpt["actor"])
         self.actor.eval()
         return self
@@ -198,12 +312,23 @@ class AdversaryTrainer:
         self.n_total_hosts = getattr(env.engine, "n_total_hosts", len(self.hosts))
         self.n_actions = victim.n_actions
 
-        self.adv = LearnedObservationAdversary(obs_dim, cfg, bandwidth_indices)
+        # (A) coordinated group: every trainable index is jointly attacked, in
+        # the same order the runner will later pass as agent_index at eval time
+        self.group_hosts = [self.hosts[i] for i in self.trainable_indices]
+
+        self.adv = LearnedObservationAdversary(
+            obs_dim, cfg, bandwidth_indices,
+            group_hosts=self.group_hosts if cfg.coordinate else None,
+        )
         self.actor = self.adv.actor
-        self.actor_t = AdversaryActor(obs_dim, cfg.hidden).to(self.device)
+        actor_obs_dim = self.adv.actor_obs_dim
+        self.actor_t = AdversaryActor(actor_obs_dim, cfg.hidden).to(self.device)
         self.actor_t.load_state_dict(self.actor.state_dict())
-        self.critic = AdversaryCritic(obs_dim, cfg.hidden).to(self.device)
-        self.critic_t = AdversaryCritic(obs_dim, cfg.hidden).to(self.device)
+
+        self.link_state_dim = (int(env.engine.get_central_state(self.group_hosts).shape[0])
+                                if cfg.coordinate else 0)
+        self.critic = AdversaryCritic(actor_obs_dim, cfg.hidden, self.link_state_dim).to(self.device)
+        self.critic_t = AdversaryCritic(actor_obs_dim, cfg.hidden, self.link_state_dim).to(self.device)
         self.critic_t.load_state_dict(self.critic.state_dict())
         self.opt_a = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
         self.opt_c = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
@@ -212,13 +337,23 @@ class AdversaryTrainer:
 
     # -- perturb every compromised agent's observation this step -----------
     def _attack_states(self, states: List[np.ndarray], explore: bool
-                       ) -> Tuple[List[np.ndarray], List[Tuple[int, np.ndarray, np.ndarray]]]:
-        """Returns (perturbed_states, transitions) where each transition is
-        (topo_idx, clean_obs, applied_delta) for the replay buffer."""
+                       ) -> Tuple[List[np.ndarray], List[Tuple]]:
+        """Returns (perturbed_states, transitions). Each transition is
+        (group_key, clean_obs, applied_delta, link_state) for the replay
+        buffer: group_key is a single topo_idx in independent mode, or the
+        list of every topo_idx in the coordinated group when cfg.coordinate
+        is set; link_state is the GLOBAL link vector in that case, else None.
+        """
         # TODO(student B — timing): if cfg.timing_budget is set, decide HERE whether
         # to spend budget on this step using a critical-state score (e.g. max link
         # utilisation, or |Q(clean)-Q(perturbed)| saliency). Skip perturbation on
         # low-leverage steps and only push transitions for steps you actually attack.
+        if self.cfg.coordinate:
+            return self._attack_states_joint(states, explore)
+        return self._attack_states_independent(states, explore)
+
+    def _attack_states_independent(self, states: List[np.ndarray], explore: bool
+                                   ) -> Tuple[List[np.ndarray], List[Tuple]]:
         adv_states = list(states)
         transitions = []
         for topo_idx in self.trainable_indices:
@@ -231,12 +366,39 @@ class AdversaryTrainer:
                 d = np.clip(d, -1.0, 1.0)
             applied = self.adv._project(orig, orig + d * self.cfg.epsilon)
             adv_states[topo_idx] = applied
-            transitions.append((topo_idx, orig, (applied - orig) / self.cfg.epsilon))
-        # TODO(student A — coordinate): replace the independent per-agent loop above
-        # with a JOINT perturbation. Concatenate the compromised agents' observations,
-        # let a single actor emit a joint delta, and share a critic that sees the
-        # global link state so the adversary can push multiple flows onto ONE shared
-        # surviving link (the mechanism that actually reaches the damage ceiling).
+            transitions.append((topo_idx, orig, (applied - orig) / self.cfg.epsilon, None))
+        return adv_states, transitions
+
+    def _attack_states_joint(self, states: List[np.ndarray], explore: bool
+                             ) -> Tuple[List[np.ndarray], List[Tuple]]:
+        """(A) Coordinated multi-agent perturbation: concatenate every
+        compromised agent's observation into one joint vector, run it through
+        a SINGLE actor so the emitted delta is one coherent joint decision
+        (not N independent ones), and score it with a critic that sees the
+        GLOBAL link state (env.engine.get_central_state) rather than any one
+        agent's local neighbourhood. This is the mechanism a per-agent
+        gradient cannot express: it lets the adversary push several flows
+        onto ONE shared surviving link instead of each agent independently
+        reacting to its own view of the network.
+        """
+        adv_states = list(states)
+        blocks = [np.asarray(states[i], dtype=np.float32) for i in self.trainable_indices]
+        joint_orig = np.concatenate(blocks)
+        o = torch.as_tensor(joint_orig, device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            d = self.actor(o).squeeze(0).cpu().numpy()
+        if explore:
+            d = d + np.random.normal(0, self.cfg.explore_noise, size=d.shape)
+            d = np.clip(d, -1.0, 1.0)
+        applied_joint = self.adv._project(joint_orig, joint_orig + d * self.cfg.epsilon)
+        applied_delta_joint = (applied_joint - joint_orig) / self.cfg.epsilon
+
+        obs_dim = blocks[0].shape[0]
+        for pos, topo_idx in enumerate(self.trainable_indices):
+            adv_states[topo_idx] = applied_joint[pos * obs_dim:(pos + 1) * obs_dim]
+
+        link_state = self.env.engine.get_central_state(self.group_hosts).astype(np.float32)
+        transitions = [(list(self.trainable_indices), joint_orig, applied_delta_joint, link_state)]
         return adv_states, transitions
 
     def _victim_actions(self, states: List[np.ndarray]):
@@ -249,16 +411,17 @@ class AdversaryTrainer:
         if len(self.buffer) < max(self.cfg.batch_size, self.cfg.warmup_steps):
             return
         for _ in range(self.cfg.updates_per_step):
-            obs, delta, r, nobs, done = self.buffer.sample(self.cfg.batch_size, self.device)
+            obs, delta, r, nobs, done, link_state, next_link_state = \
+                self.buffer.sample(self.cfg.batch_size, self.device)
             # critic: TD target uses the adversary's own next-step action
             with torch.no_grad():
                 nd = self.actor_t(nobs)
-                y = r + self.cfg.gamma * (1 - done) * self.critic_t(nobs, nd)
-            q = self.critic(obs, delta)
+                y = r + self.cfg.gamma * (1 - done) * self.critic_t(nobs, nd, next_link_state)
+            q = self.critic(obs, delta, link_state)
             loss_c = F.mse_loss(q, y)
             self.opt_c.zero_grad(); loss_c.backward(); self.opt_c.step()
             # actor: ascend Q (maximise victim loss)
-            loss_a = -self.critic(obs, self.actor(obs)).mean()
+            loss_a = -self.critic(obs, self.actor(obs), link_state).mean()
             self.opt_a.zero_grad(); loss_a.backward(); self.opt_a.step()
             self._soft_update(self.actor_t, self.actor)
             self._soft_update(self.critic_t, self.critic)
@@ -288,9 +451,17 @@ class AdversaryTrainer:
                 next_states, _rewards, info = self.env.step(actions)
                 # SA-MDP reward: victim per-step packet loss fraction (attacker gain)
                 loss_frac = float(info.get("packet_loss_rate", 0.0)) / 100.0
-                for (topo_idx, clean_obs, applied_delta) in transitions:
-                    self.buffer.push(clean_obs, applied_delta, loss_frac,
-                                     np.asarray(next_states[topo_idx], np.float32), 0.0)
+                for (group_key, clean_obs, applied_delta, link_state) in transitions:
+                    if isinstance(group_key, list):
+                        next_obs = np.concatenate(
+                            [next_states[i] for i in group_key]).astype(np.float32)
+                        next_link_state = self.env.engine.get_central_state(
+                            self.group_hosts).astype(np.float32)
+                    else:
+                        next_obs = np.asarray(next_states[group_key], np.float32)
+                        next_link_state = None
+                    self.buffer.push(clean_obs, applied_delta, loss_frac, next_obs, 0.0,
+                                     link_state, next_link_state)
                 ep_reward += loss_frac
                 states = next_states
                 self._step += 1
