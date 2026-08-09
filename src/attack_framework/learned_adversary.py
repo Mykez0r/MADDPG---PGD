@@ -407,6 +407,80 @@ class LearnedObservationAdversary:
         return self
 
 
+# ──────────────────── random control (same ball, no learning) ─────────────────
+class RandomControlAdversary:
+    """Random-perturbation CONTROL for the learned adversary.
+
+    Identical threat model to LearnedObservationAdversary — same L-inf epsilon
+    ball, same domain re-projection, same optional timing gate — but the
+    direction is drawn uniformly at random instead of learned. This is the arm
+    the learned attack has to beat.
+
+    Why it matters: under link failures the RAW PDR drop is dominated by the
+    failures themselves, not by the attack, so `clean - learned` mostly measures
+    the topology falling over. Only the `random - learned` gap isolates what the
+    *adversary* contributed. Report that gap, not the raw drop.
+
+    RNG discipline: draws come from a DEDICATED Generator, never the global
+    numpy/random streams that `_attack_episodes` seeds from `traffic_seed`. If
+    this arm consumed entropy from those streams it would desync the injected
+    traffic relative to the clean and learned runs and silently break the
+    pairing (and with it the paired CIs). Mirrors the runner's own
+    `_attack_rng` / `_rule_rng` discipline.
+    """
+
+    def __init__(self, obs_dim: int, cfg: AdversaryConfig,
+                 bandwidth_indices: Optional[Sequence[int]] = None,
+                 seed: int = 0):
+        self.cfg = cfg
+        self.epsilon = cfg.epsilon        # runner overwrites this per case
+        self.attack_type = "random"
+        self.per_agent_obs_dim = obs_dim
+        self.bandwidth_indices = (np.asarray(list(bandwidth_indices), dtype=np.int64)
+                                  if bandwidth_indices else None)
+        self.rng = np.random.default_rng(seed)
+
+        # Same gate as the learned arm so the comparison holds TIMING fixed and
+        # varies only the perturbation DIRECTION (learned vs random). Each arm
+        # gates on its own trajectory, which is correct: the trajectories
+        # genuinely diverge once the attacks differ.
+        self.timing_gate = TimingGate(cfg.timing_budget) if cfg.timing_budget else None
+        self._gate_step = None
+        self._gate_fire = True
+
+        self.attack_stats: Dict = {"total_attacks": 0, "attack_success_count": 0}
+
+    def _project(self, orig: np.ndarray, adv: np.ndarray) -> np.ndarray:
+        adv = np.clip(adv, orig - self.epsilon, orig + self.epsilon)
+        if self.bandwidth_indices is not None:
+            adv[self.bandwidth_indices] = np.clip(adv[self.bandwidth_indices], 0.0, 1.0)
+        else:
+            adv = np.clip(adv, 0.0, 1.0)
+        return adv.astype(np.float32)
+
+    def perturb(self, state: np.ndarray) -> np.ndarray:
+        orig = np.asarray(state, dtype=np.float32)
+        d = self.rng.uniform(-1.0, 1.0, size=orig.shape)
+        return self._project(orig, orig + d * self.epsilon)
+
+    def generate_adversarial_state(self, state, agent_network=None,
+                                   network_engine=None, agent_index: int = 0,
+                                   bandwidth_indices=None) -> np.ndarray:
+        """FGSM-compatible entry point, same signature as the learned arm."""
+        if self.timing_gate is not None:
+            if network_engine is None:
+                raise ValueError("cfg.timing_budget requires network_engine to "
+                                  "score the critical-state signal")
+            step = getattr(network_engine, "time_step", None)
+            if step is None or step != self._gate_step:
+                fire, _score, _thr = self.timing_gate.should_attack(network_engine)
+                self._gate_step = step
+                self._gate_fire = fire
+            if not self._gate_fire:
+                return np.asarray(state, dtype=np.float32)
+        return self.perturb(state)
+
+
 # ─────────────────────────── trainer ─────────────────────────────────────────
 class AdversaryTrainer:
     """
