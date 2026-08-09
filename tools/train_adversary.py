@@ -40,6 +40,7 @@ from learned_adversary import (  # noqa: E402
     AdversaryConfig, AdversaryTrainer, LearnedObservationAdversary,
     RandomControlAdversary,
 )
+from coordinated_pgd import CoordinatedPGDAdversary  # noqa: E402
 
 # two-sided t critical values at 95%, indexed by degrees of freedom (n-1)
 _T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
@@ -134,6 +135,156 @@ def build_victim_and_env(runner: "StandaloneExperimentRunner", variant_name: str
     return maddpg, env, trainable, obs_dim
 
 
+def _run_paired_eval(runner, maddpg, env, adv, mode, args, obs_dim, cfg,
+                     coordinate: bool, group_size: int):
+    """Three PAIRED arms (clean / random / attack) + the adversarial-specific gap.
+
+    Shared by the learned-checkpoint and coordinated-PGD paths so both are scored
+    identically and are directly comparable.
+    """
+    # PAIRING: every arm gets the same traffic_seed, load and failure count.
+    # _attack_episodes re-seeds the global RNGs from traffic_seed at entry, so the
+    # injected traffic AND the sampled link failures are identical across
+    # clean / random / attack. Without this the per-episode differences below would
+    # be comparing different networks and the CIs would be meaningless.
+    common = dict(offered_load_factor=args.load,
+                  n_link_failures=args.failures,
+                  traffic_seed=args.traffic_seed)
+    n_eval = args.eval_episodes
+
+    runner.attack_framework = adv
+    clean = runner._attack_episodes(maddpg, env, n_eval, args.steps,
+                                    attack=False, **common)
+
+    # RANDOM CONTROL: same epsilon-ball (and same timing gate, when set), random
+    # direction. Draws from its own Generator so it consumes no entropy from the
+    # seeded global streams and the pairing survives.
+    rnd = RandomControlAdversary(obs_dim, cfg, seed=args.traffic_seed)
+    runner.attack_framework = rnd
+    random_arm = runner._attack_episodes(maddpg, env, n_eval, args.steps,
+                                         attack=True, attack_type="random",
+                                         epsilon=args.epsilon,
+                                         measure_flips=True, **common)
+
+    runner.attack_framework = adv
+    atk_arm = runner._attack_episodes(maddpg, env, n_eval, args.steps,
+                                      attack=True, attack_type=adv.attack_type,
+                                      epsilon=args.epsilon,
+                                      measure_flips=True, **common)
+
+    c_pdr = clean["mean_end_to_end_pdr"]
+    r_pdr = random_arm["mean_end_to_end_pdr"]
+    a_pdr = atk_arm["mean_end_to_end_pdr"]
+    # HEADLINE: adversarial-specific gap = how much the ATTACK's direction cost the
+    # victim beyond what a random perturbation of the same size already costs.
+    # Paired per-episode, so the CI is valid.
+    gap_mean, gap_lo, gap_hi = _paired_diff(random_arm["pdr_series"],
+                                            atk_arm["pdr_series"])
+    raw_mean, raw_lo, raw_hi = _paired_diff(clean["pdr_series"],
+                                            atk_arm["pdr_series"])
+    rnd_mean, rnd_lo, rnd_hi = _paired_diff(clean["pdr_series"],
+                                            random_arm["pdr_series"])
+
+    result = {
+        "variant": args.variant,
+        "mode": mode,
+        "attack_type": adv.attack_type,
+        "coordinate": coordinate,
+        "group_size": group_size,
+        "epsilon": args.epsilon,
+        "timing_budget": args.timing_budget,
+        "offered_load_factor": args.load,
+        "n_link_failures": args.failures,
+        "episodes": n_eval,
+        "steps_per_episode": args.steps,
+        "traffic_seed": args.traffic_seed,
+        "paired": True,
+        "pdr": {
+            "clean": c_pdr, "random": r_pdr, "attack": a_pdr,
+            "clean_series": clean["pdr_series"],
+            "random_series": random_arm["pdr_series"],
+            "attack_series": atk_arm["pdr_series"],
+        },
+        # OUTCOMES — what actually happened to delivery.
+        "outcomes": {
+            "adversarial_gap_pp": gap_mean,
+            "adversarial_gap_ci95": [gap_lo, gap_hi],
+            "raw_drop_pp": raw_mean,
+            "raw_drop_ci95": [raw_lo, raw_hi],
+            "random_drop_pp": rnd_mean,
+            "random_drop_ci95": [rnd_lo, rnd_hi],
+        },
+        # DECISIONS — how much routing the attack changed. Deliberately kept
+        # separate from outcomes: a high flip rate with a flat PDR means the network
+        # ABSORBED the attack, it does not mean the attack worked.
+        "decisions": {
+            "attack_action_flip_rate": atk_arm.get("action_flip_rate"),
+            "random_action_flip_rate": random_arm.get("action_flip_rate"),
+        },
+        "warnings": [],
+    }
+    if isinstance(adv, CoordinatedPGDAdversary):
+        result["pgd"] = {"objective": adv.objective, "n_steps": adv.n_steps,
+                         "alpha": adv.alpha, "n_restarts": adv.n_restarts,
+                         "random_start": adv.random_start}
+
+    w = result["warnings"]
+    if gap_lo is not None and gap_lo <= 0.0 <= gap_hi:
+        # "CI includes 0" at small n can mean "no effect" OR "underpowered"; report
+        # the resolution so the two are not conflated.
+        half = (gap_hi - gap_lo) / 2.0
+        result["outcomes"]["min_detectable_effect_pp"] = half
+        w.append(
+            f"adversarial gap CI includes 0 — no evidence this attack beats the "
+            f"random control at this budget. NOTE this run only resolves effects "
+            f"larger than ~{half:.2f}pp (n={n_eval}); a smaller true gap would be "
+            f"invisible here, so this is not proof of no effect. Do NOT report the "
+            f"raw drop as attack damage.")
+    if gap_hi is not None and gap_hi < 0.0:
+        w.append(
+            f"adversarial gap is significantly NEGATIVE ({gap_mean:+.2f}pp, CI "
+            f"[{gap_lo:+.2f}, {gap_hi:+.2f}]) — this attack is WORSE than random "
+            "noise of the same size. For a learned adversary that indicts the "
+            "training run; for PGD it points at the objective or the step size, "
+            "not at victim robustness.")
+    flip = atk_arm.get("action_flip_rate")
+    rflip = random_arm.get("action_flip_rate")
+    if flip is not None and flip >= 0.05 and gap_mean is not None and gap_mean <= 0.5:
+        extra = f" (random control flips {rflip:.1%})" if rflip is not None else ""
+        w.append(
+            f"flip rate {flip:.1%}{extra} but adversarial gap only {gap_mean:+.2f}pp "
+            "— the network is ABSORBING the flips (K-path redundancy). Decisions "
+            "changed is NOT outcomes changed; do not report the flip rate as success.")
+    if c_pdr < 60.0:
+        w.append(
+            f"clean PDR is only {c_pdr:.1f}% — this is a FAILURE-DOMINATED cell (the "
+            "network self-collapses without any attack). Not attack-informative; the "
+            "raw drop here is mostly the topology.")
+    if n_eval < 10:
+        w.append(
+            f"n={n_eval} episodes is small — CIs are wide and this cell is indicative "
+            "only. The degenerate high-failure cells (n~6) in the FGSM study were "
+            "exactly this.")
+
+    print(json.dumps({k: v for k, v in result.items() if k != "pdr"}, indent=2))
+    print(f"\n[eval] clean {c_pdr:.2f}%  random {r_pdr:.2f}%  attack {a_pdr:.2f}%")
+    if gap_lo is not None:
+        print(f"[eval] ADVERSARIAL GAP (random-attack) {gap_mean:+.2f}pp "
+              f"95%CI [{gap_lo:+.2f}, {gap_hi:+.2f}]")
+    else:
+        print(f"[eval] ADVERSARIAL GAP (random-attack) {gap_mean:+.2f}pp")
+    for line in w:
+        print(f"[eval][WARN] {line}")
+
+    # Mode-tagged file so one eval does not clobber another you are comparing it
+    # against; the stable name is kept for continuity with earlier runs.
+    json.dump(result, open(os.path.join(args.out, "learned_adv_eval.json"), "w"),
+              indent=2)
+    json.dump(result, open(os.path.join(args.out, f"learned_adv_eval_{mode}.json"), "w"),
+              indent=2)
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -159,6 +310,28 @@ def main():
                     help="shared seed that keeps the three eval arms PAIRED on the "
                          "same traffic and the same sampled link failures; the "
                          "paired CIs are only valid if every arm uses it")
+    ap.add_argument("--attack", choices=["learned", "coordinated-pgd"],
+                    default="learned",
+                    help="which adversary to evaluate. 'learned' loads --adv-ckpt; "
+                         "'coordinated-pgd' solves a joint perturbation by projected "
+                         "gradient ascent at every step and needs no checkpoint.")
+    # --- coordinated PGD (Madry-style, joint across agents) ---
+    ap.add_argument("--pgd-steps", type=int, default=10,
+                    help="PGD iterations per timestep")
+    ap.add_argument("--pgd-alpha", type=float, default=None,
+                    help="PGD step size; default 2.5*epsilon/steps (Madry's rule, "
+                         "large enough to reach the ball boundary from any start)")
+    ap.add_argument("--pgd-restarts", type=int, default=1,
+                    help="random restarts, keeping the best objective (Madry Table 1: "
+                         "restarts measurably strengthen the attack)")
+    ap.add_argument("--pgd-no-random-start", action="store_true",
+                    help="start from the clean observation instead of a uniform point "
+                         "in the epsilon-ball (i.e. BIM rather than PGD)")
+    ap.add_argument("--pgd-objective", choices=["critic", "congestion"],
+                    default="critic",
+                    help="'critic': ascend -Q on the victim's own centralised critics. "
+                         "'congestion': maximise the true bottleneck utilisation of the "
+                         "paths the victim is steered onto (shared-bottleneck hypothesis).")
     ap.add_argument("--coordinate", action="store_true",
                     help="(A) joint multi-agent perturbation. Training only — at "
                          "eval the mode is read from the checkpoint.")
@@ -174,6 +347,27 @@ def main():
     cfg = AdversaryConfig(epsilon=args.epsilon,
                           coordinate=args.coordinate,
                           timing_budget=args.timing_budget)
+
+    if args.eval_only and args.attack == "coordinated-pgd":
+        # Optimisation-based attack: nothing to train, nothing to load. The joint
+        # perturbation is solved fresh at every timestep by projected gradient
+        # ascent on a global objective, so it needs no reward signal at all --
+        # which is the whole point, given the learned adversary's reward carries
+        # essentially none (see tools/diagnose_adv.py).
+        adv = CoordinatedPGDAdversary(
+            maddpg, env, trainable, epsilon=args.epsilon,
+            n_steps=args.pgd_steps, alpha=args.pgd_alpha,
+            random_start=not args.pgd_no_random_start,
+            n_restarts=args.pgd_restarts, objective=args.pgd_objective,
+            seed=args.traffic_seed)
+        mode = f"coordinated-pgd-{args.pgd_objective}"
+        print(f"[eval] mode={mode} agents={adv.n_agents} epsilon={args.epsilon} "
+              f"steps={adv.n_steps} alpha={adv.alpha:.4f} "
+              f"restarts={adv.n_restarts} random_start={adv.random_start} "
+              f"episodes={args.eval_episodes} seed={args.traffic_seed}")
+        _run_paired_eval(runner, maddpg, env, adv, mode, args, obs_dim,
+                         cfg, coordinate=True, group_size=adv.n_agents)
+        return
 
     if args.eval_only:
         assert args.adv_ckpt, "--eval-only needs --adv-ckpt"
@@ -205,145 +399,8 @@ def main():
         print(f"[eval] mode={mode} group_size={adv.group_size} "
               f"epsilon={args.epsilon} timing_budget={args.timing_budget} "
               f"episodes={args.eval_episodes} seed={args.traffic_seed}")
-
-        # PAIRING: every arm gets the same traffic_seed, load and failure count.
-        # _attack_episodes re-seeds the global RNGs from traffic_seed at entry, so
-        # the injected traffic AND the sampled link failures are identical across
-        # clean / random / learned. Without this the per-episode differences below
-        # would be comparing different networks and the CIs would be meaningless.
-        common = dict(offered_load_factor=args.load,
-                      n_link_failures=args.failures,
-                      traffic_seed=args.traffic_seed)
-        n_eval = args.eval_episodes
-
-        runner.attack_framework = adv
-        clean = runner._attack_episodes(maddpg, env, n_eval, args.steps,
-                                        attack=False, **common)
-
-        # RANDOM CONTROL: same epsilon-ball and same timing gate, random direction.
-        # Uses its own Generator so it consumes no entropy from the seeded global
-        # streams and the pairing survives.
-        rnd = RandomControlAdversary(obs_dim, cfg, seed=args.traffic_seed)
-        runner.attack_framework = rnd
-        random_arm = runner._attack_episodes(maddpg, env, n_eval, args.steps,
-                                             attack=True, attack_type="random",
-                                             epsilon=args.epsilon,
-                                             measure_flips=True, **common)
-
-        runner.attack_framework = adv
-        learned_arm = runner._attack_episodes(maddpg, env, n_eval, args.steps,
-                                              attack=True, attack_type="learned",
-                                              epsilon=args.epsilon,
-                                              measure_flips=True, **common)
-
-        c_pdr = clean["mean_end_to_end_pdr"]
-        r_pdr = random_arm["mean_end_to_end_pdr"]
-        l_pdr = learned_arm["mean_end_to_end_pdr"]
-        # HEADLINE: adversarial-specific gap = how much the LEARNED direction cost
-        # the victim beyond what a random perturbation of the same size already
-        # costs. Paired per-episode, so the CI is valid.
-        gap_mean, gap_lo, gap_hi = _paired_diff(random_arm["pdr_series"],
-                                                learned_arm["pdr_series"])
-        raw_mean, raw_lo, raw_hi = _paired_diff(clean["pdr_series"],
-                                                learned_arm["pdr_series"])
-        rnd_mean, rnd_lo, rnd_hi = _paired_diff(clean["pdr_series"],
-                                                random_arm["pdr_series"])
-
-        result = {
-            "variant": args.variant,
-            "mode": mode,
-            "coordinate": cfg.coordinate,
-            "group_size": adv.group_size,
-            "epsilon": args.epsilon,
-            "timing_budget": args.timing_budget,
-            "offered_load_factor": args.load,
-            "n_link_failures": args.failures,
-            "episodes": n_eval,
-            "steps_per_episode": args.steps,
-            "traffic_seed": args.traffic_seed,
-            "paired": True,
-            "pdr": {
-                "clean": c_pdr,
-                "random": r_pdr,
-                "learned": l_pdr,
-                "clean_series": clean["pdr_series"],
-                "random_series": random_arm["pdr_series"],
-                "learned_series": learned_arm["pdr_series"],
-            },
-            # OUTCOMES — what actually happened to delivery.
-            "outcomes": {
-                "adversarial_gap_pp": gap_mean,
-                "adversarial_gap_ci95": [gap_lo, gap_hi],
-                "raw_drop_pp": raw_mean,
-                "raw_drop_ci95": [raw_lo, raw_hi],
-                "random_drop_pp": rnd_mean,
-                "random_drop_ci95": [rnd_lo, rnd_hi],
-            },
-            # DECISIONS — how much routing the attack changed. Deliberately kept
-            # separate from outcomes: a high flip rate with a flat PDR means the
-            # network ABSORBED the attack, it does not mean the attack worked.
-            "decisions": {
-                "learned_action_flip_rate": learned_arm.get("action_flip_rate"),
-                "random_action_flip_rate": random_arm.get("action_flip_rate"),
-            },
-            "warnings": [],
-        }
-
-        w = result["warnings"]
-        if gap_lo is not None and gap_lo <= 0.0 <= gap_hi:
-            # Report the resolution too: "CI includes 0" at small n can mean
-            # "no effect" OR "underpowered". At n=15 this test only resolves a
-            # ~2pp gap about two thirds of the time, so the two must not be
-            # conflated — raise --eval-episodes before concluding "no effect".
-            half = (gap_hi - gap_lo) / 2.0
-            result["outcomes"]["min_detectable_effect_pp"] = half
-            w.append(
-                f"adversarial gap CI includes 0 — no evidence the learned attack "
-                f"beats the random control at this budget. NOTE this run only "
-                f"resolves effects larger than ~{half:.2f}pp (n={n_eval}); a "
-                f"smaller true gap would be invisible here, so this is not proof "
-                f"of no effect. Do NOT report the raw drop as attack damage.")
-        if gap_hi is not None and gap_hi < 0.0:
-            w.append(
-                f"adversarial gap is significantly NEGATIVE ({gap_mean:+.2f}pp, CI "
-                f"[{gap_lo:+.2f}, {gap_hi:+.2f}]) — the learned adversary is WORSE than "
-                "random noise of the same size. That indicts the TRAINING RUN, not the "
-                "victim's robustness: check that attack_loss_reward actually rose in "
-                "train_history.json before drawing any conclusion about the ceiling.")
-        flip = learned_arm.get("action_flip_rate")
-        rflip = random_arm.get("action_flip_rate")
-        if flip is not None and flip >= 0.05 and gap_mean is not None and gap_mean <= 0.5:
-            extra = f" (random control flips {rflip:.1%})" if rflip is not None else ""
-            w.append(
-                f"flip rate {flip:.1%}{extra} but adversarial gap only {gap_mean:+.2f}pp "
-                "— the network is ABSORBING the flips (K-path redundancy). Decisions "
-                "changed is NOT outcomes changed; do not report the flip rate as success.")
-        if c_pdr < 60.0:
-            w.append(
-                f"clean PDR is only {c_pdr:.1f}% — this is a FAILURE-DOMINATED cell "
-                "(the network self-collapses without any attack). Not "
-                "attack-informative; the raw drop here is mostly the topology.")
-        if n_eval < 10:
-            w.append(
-                f"n={n_eval} episodes is small — CIs are wide and this cell is "
-                "indicative only. The degenerate high-failure cells (n~6) in the "
-                "FGSM study were exactly this.")
-
-        print(json.dumps({k: v for k, v in result.items() if k != "pdr"}, indent=2))
-        print(f"\n[eval] clean {c_pdr:.2f}%  random {r_pdr:.2f}%  learned {l_pdr:.2f}%")
-        print(f"[eval] ADVERSARIAL GAP (random-learned) {gap_mean:+.2f}pp "
-              f"95%CI [{gap_lo:+.2f}, {gap_hi:+.2f}]"
-              if gap_lo is not None else
-              f"[eval] ADVERSARIAL GAP (random-learned) {gap_mean:+.2f}pp")
-        for line in w:
-            print(f"[eval][WARN] {line}")
-
-        # Mode-tagged file so a coordinated eval does not clobber the independent
-        # one you are comparing it against; the stable name is kept for continuity.
-        json.dump(result, open(os.path.join(args.out, "learned_adv_eval.json"), "w"),
-                  indent=2)
-        json.dump(result, open(os.path.join(args.out, f"learned_adv_eval_{mode}.json"), "w"),
-                  indent=2)
+        _run_paired_eval(runner, maddpg, env, adv, mode, args, obs_dim, cfg,
+                         coordinate=cfg.coordinate, group_size=adv.group_size)
         return
 
     trainer = AdversaryTrainer(
