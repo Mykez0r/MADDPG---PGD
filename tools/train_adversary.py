@@ -303,12 +303,21 @@ def main():
                 f"resolves effects larger than ~{half:.2f}pp (n={n_eval}); a "
                 f"smaller true gap would be invisible here, so this is not proof "
                 f"of no effect. Do NOT report the raw drop as attack damage.")
-        flip = learned_arm.get("action_flip_rate")
-        if flip is not None and flip > 0.15 and gap_mean is not None and abs(gap_mean) < 1.0:
+        if gap_hi is not None and gap_hi < 0.0:
             w.append(
-                f"flip rate {flip:.1%} but adversarial gap only {gap_mean:+.2f}pp — "
-                "the network is absorbing the flips (K-path redundancy), the attack "
-                "is not winning. Decisions changed != outcomes changed.")
+                f"adversarial gap is significantly NEGATIVE ({gap_mean:+.2f}pp, CI "
+                f"[{gap_lo:+.2f}, {gap_hi:+.2f}]) — the learned adversary is WORSE than "
+                "random noise of the same size. That indicts the TRAINING RUN, not the "
+                "victim's robustness: check that attack_loss_reward actually rose in "
+                "train_history.json before drawing any conclusion about the ceiling.")
+        flip = learned_arm.get("action_flip_rate")
+        rflip = random_arm.get("action_flip_rate")
+        if flip is not None and flip >= 0.05 and gap_mean is not None and gap_mean <= 0.5:
+            extra = f" (random control flips {rflip:.1%})" if rflip is not None else ""
+            w.append(
+                f"flip rate {flip:.1%}{extra} but adversarial gap only {gap_mean:+.2f}pp "
+                "— the network is ABSORBING the flips (K-path redundancy). Decisions "
+                "changed is NOT outcomes changed; do not report the flip rate as success.")
         if c_pdr < 60.0:
             w.append(
                 f"clean PDR is only {c_pdr:.1f}% — this is a FAILURE-DOMINATED cell "
