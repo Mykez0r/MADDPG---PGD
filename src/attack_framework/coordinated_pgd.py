@@ -87,6 +87,7 @@ class CoordinatedPGDAdversary:
                  alpha: Optional[float] = None, random_start: bool = True,
                  n_restarts: int = 1, objective: str = "critic",
                  bandwidth_indices: Optional[Sequence[int]] = None,
+                 domain_clamp: str = "fgsm_parity",
                  seed: int = 20240601):
         if getattr(maddpg, "critic_type", None) != "central_critic" and objective == "critic":
             raise ValueError(
@@ -110,6 +111,14 @@ class CoordinatedPGDAdversary:
         self.n_restarts = max(1, int(n_restarts))
         self.objective = objective
         self.attack_type = "coordinated_pgd"   # API parity with FGSMAttackFramework
+        if domain_clamp not in ("fgsm_parity", "full"):
+            raise ValueError("domain_clamp must be 'fgsm_parity' or 'full'")
+        # 'fgsm_parity' reproduces the FGSM baseline's admissible set exactly, so
+        # damage differences are attributable to the ATTACK and not to the ball.
+        # 'full' clamps every feature to [0,1] (physically the correct observation
+        # domain) but is a STRICTLY SMALLER set than the baseline used, so results
+        # under it are not directly comparable to the FGSM numbers.
+        self.domain_clamp = domain_clamp
 
         engine = env.engine
         hosts = engine.get_all_hosts()
@@ -123,6 +132,20 @@ class CoordinatedPGDAdversary:
         self.bandwidth_indices = (np.asarray(list(bandwidth_indices), dtype=np.int64)
                                   if bandwidth_indices else None)
         self.rng = np.random.default_rng(seed)
+
+        # FROZEN VICTIM. The attack only ever forward-passes the victim, but the
+        # backward pass that produces d(objective)/d(observation) would otherwise
+        # also accumulate .grad on every victim parameter it touches. That never
+        # changes the weights (no optimizer steps them), yet it allocates grad
+        # buffers for the whole victim and leaves stale gradients lying around for
+        # anything downstream. build_victim_and_env freezes the ACTORS; the critics
+        # are not frozen there and this attack backprops through them too, so
+        # freeze both here and make the guarantee explicit rather than incidental.
+        for ag in maddpg.agents:
+            for p in ag.actor.parameters():
+                p.requires_grad_(False)
+            for p in ag.critic.parameters():
+                p.requires_grad_(False)
 
         # Where the action-aligned K-path bottleneck utilisations live in the
         # observation. Anchored on the START of the block, deliberately: get_state
@@ -153,13 +176,26 @@ class CoordinatedPGDAdversary:
 
     # ── projection ────────────────────────────────────────────────────────────
     def _project(self, orig: torch.Tensor, adv: torch.Tensor) -> torch.Tensor:
-        """L-inf ball around orig, then the domain clamp. Shapes are [n_agents, d]."""
+        """L-inf ball around orig, then the domain clamp. Shapes are [n_agents, d].
+
+        The domain clamp MUST match the FGSM baseline's admissible set, or a
+        difference in damage cannot be attributed to the attack. See
+        `domain_clamp` in the constructor for the modes.
+        """
         adv = orig + torch.clamp(adv - orig, -self.epsilon, self.epsilon)
         if self.bandwidth_indices is not None:
             idx = torch.as_tensor(self.bandwidth_indices, device=adv.device)
+            adv = adv.clone()
             adv[:, idx] = adv[:, idx].clamp(0.0, 1.0)
-        else:
+        elif self.domain_clamp == "full":
             adv = adv.clamp(0.0, 1.0)
+        elif self.domain_clamp == "fgsm_parity":
+            # Exactly FGSMAttackFramework._apply_domain_constraints with
+            # bandwidth_indices=None, which is how _attack_episodes calls it:
+            # only the first min(4, d) slots are clamped, the rest are free.
+            bw = min(4, adv.shape[1])
+            adv = adv.clone()
+            adv[:, :bw] = adv[:, :bw].clamp(0.0, 1.0)
         return adv
 
     @staticmethod

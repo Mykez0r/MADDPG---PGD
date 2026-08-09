@@ -156,10 +156,14 @@ def _run_paired_eval(runner, maddpg, env, adv, mode, args, obs_dim, cfg,
     clean = runner._attack_episodes(maddpg, env, n_eval, args.steps,
                                     attack=False, **common)
 
-    # RANDOM CONTROL: same epsilon-ball (and same timing gate, when set), random
-    # direction. Draws from its own Generator so it consumes no entropy from the
-    # seeded global streams and the pairing survives.
-    rnd = RandomControlAdversary(obs_dim, cfg, seed=args.traffic_seed)
+    # RANDOM CONTROL: same epsilon-ball, same DOMAIN CLAMP as the arm it controls
+    # for (otherwise the two draw from different admissible sets and the gap
+    # between them is not attributable to the perturbation direction), and the same
+    # timing gate when one is set. Draws from its own Generator so it consumes no
+    # entropy from the seeded global streams and the pairing survives.
+    clamp = getattr(adv, "domain_clamp", "full")
+    rnd = RandomControlAdversary(obs_dim, cfg, seed=args.traffic_seed,
+                                 domain_clamp=clamp)
     runner.attack_framework = rnd
     random_arm = runner._attack_episodes(maddpg, env, n_eval, args.steps,
                                          attack=True, attack_type="random",
@@ -199,6 +203,9 @@ def _run_paired_eval(runner, maddpg, env, adv, mode, args, obs_dim, cfg,
         "steps_per_episode": args.steps,
         "traffic_seed": args.traffic_seed,
         "paired": True,
+        # Which admissible set the attack and control ran in. 'fgsm_parity' is
+        # required for the numbers to be comparable to the FGSM baseline.
+        "domain_clamp": clamp,
         "pdr": {
             "clean": c_pdr, "random": r_pdr, "attack": a_pdr,
             "clean_series": clean["pdr_series"],
@@ -327,6 +334,15 @@ def main():
     ap.add_argument("--pgd-no-random-start", action="store_true",
                     help="start from the clean observation instead of a uniform point "
                          "in the epsilon-ball (i.e. BIM rather than PGD)")
+    ap.add_argument("--domain-clamp", choices=["fgsm_parity", "full"],
+                    default="fgsm_parity",
+                    help="admissible set for the perturbation. 'fgsm_parity' (default) "
+                         "reproduces the FGSM baseline exactly — only the first 4 slots "
+                         "are clamped to [0,1] — so damage differences are attributable "
+                         "to the attack rather than to the ball. 'full' clamps every "
+                         "feature to [0,1], which is the physically correct observation "
+                         "domain but a STRICTLY SMALLER set than the FGSM runs used, so "
+                         "those numbers are NOT comparable to the published baseline.")
     ap.add_argument("--pgd-objective", choices=["critic", "congestion"],
                     default="critic",
                     help="'critic': ascend -Q on the victim's own centralised critics. "
@@ -359,11 +375,12 @@ def main():
             n_steps=args.pgd_steps, alpha=args.pgd_alpha,
             random_start=not args.pgd_no_random_start,
             n_restarts=args.pgd_restarts, objective=args.pgd_objective,
-            seed=args.traffic_seed)
+            domain_clamp=args.domain_clamp, seed=args.traffic_seed)
         mode = f"coordinated-pgd-{args.pgd_objective}"
         print(f"[eval] mode={mode} agents={adv.n_agents} epsilon={args.epsilon} "
               f"steps={adv.n_steps} alpha={adv.alpha:.4f} "
               f"restarts={adv.n_restarts} random_start={adv.random_start} "
+              f"domain_clamp={adv.domain_clamp} "
               f"episodes={args.eval_episodes} seed={args.traffic_seed}")
         _run_paired_eval(runner, maddpg, env, adv, mode, args, obs_dim,
                          cfg, coordinate=True, group_size=adv.n_agents)

@@ -431,13 +431,22 @@ class RandomControlAdversary:
 
     def __init__(self, obs_dim: int, cfg: AdversaryConfig,
                  bandwidth_indices: Optional[Sequence[int]] = None,
-                 seed: int = 0):
+                 seed: int = 0, domain_clamp: str = "full"):
         self.cfg = cfg
         self.epsilon = cfg.epsilon        # runner overwrites this per case
         self.attack_type = "random"
         self.per_agent_obs_dim = obs_dim
         self.bandwidth_indices = (np.asarray(list(bandwidth_indices), dtype=np.int64)
                                   if bandwidth_indices else None)
+        # Must match the admissible set of the arm being controlled for, or the
+        # control and the attack are drawing from different balls and the gap
+        # between them is not attributable to the perturbation DIRECTION.
+        # 'full' = clamp every feature to [0,1] (what LearnedObservationAdversary
+        # does); 'fgsm_parity' = clamp only the first min(4, d) slots, reproducing
+        # FGSMAttackFramework._apply_domain_constraints as _attack_episodes calls it.
+        if domain_clamp not in ("fgsm_parity", "full"):
+            raise ValueError("domain_clamp must be 'fgsm_parity' or 'full'")
+        self.domain_clamp = domain_clamp
         self.rng = np.random.default_rng(seed)
 
         # Same gate as the learned arm so the comparison holds TIMING fixed and
@@ -454,8 +463,11 @@ class RandomControlAdversary:
         adv = np.clip(adv, orig - self.epsilon, orig + self.epsilon)
         if self.bandwidth_indices is not None:
             adv[self.bandwidth_indices] = np.clip(adv[self.bandwidth_indices], 0.0, 1.0)
-        else:
+        elif self.domain_clamp == "full":
             adv = np.clip(adv, 0.0, 1.0)
+        else:                                    # 'fgsm_parity'
+            bw = min(4, adv.shape[-1])
+            adv[..., :bw] = np.clip(adv[..., :bw], 0.0, 1.0)
         return adv.astype(np.float32)
 
     def perturb(self, state: np.ndarray) -> np.ndarray:
