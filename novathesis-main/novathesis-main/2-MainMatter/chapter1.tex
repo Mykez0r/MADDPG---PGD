@@ -1,0 +1,71 @@
+%!TEX root = ../template.tex
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% chapter1.tex
+%% NOVA thesis document file
+%%
+%% Chapter with introduction
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\typeout{NT FILE chapter1.tex}%
+
+\chapter{Introduction}
+\label{cha:introduction}
+
+\prependtographicspath{{5-Figures/Covers/}}
+
+% epigraph configuration
+\epigraphfontsize{\small\itshape}
+\setlength\epigraphwidth{12.5cm}
+\setlength\epigraphrule{0pt}
+
+% \section{Welcome to the \novathesis\ Template}
+% \label{sec:if_you_use_this_template}
+
+\paragraph{}As the field of telecommunications progresses issues such as scalability, routing, quality of
+service, resource management and network security become increasingly complex. Recent studies 
+turn to Artificial Intelligence (AI) and Machine Learning (ML) for solutions, specifically MADDPG and GNN models involving DRL 
+agents to make optimal routing decisions.
+
+The convergence of Deep Reinforcement Learning (DRL), Graph Neural Networks (GNNs), 
+and automatization of network management and configuration represents a radical change in how modern networks 
+are controlled and optimized. Traditional routing protocols, such as OSPF and BGP, 
+employ static rule-based approaches that struggle with dynamic network environments characterized by heterogeneous Quality-of-Service (QoS) 
+requirements, variable traffic patterns, and multiple optimization constraints. 
+Deep Reinforcement Learning has emerged as a powerful alternative, enabling routing agents 
+to learn adaptive policies directly from real-time network observations without explicit 
+programming of optimization rules. \cite{Tian2023maddpgslice}
+
+Multi-Agent DRL (MADRL), more specifically utilizing Multi-Agent Deep Deterministic Policy Gradient (MADDPG), systems extend this capability to distributed network environments 
+where multiple autonomous agents must coordinate routing decisions across different nodes 
+while maintaining local operational autonomy. When enhanced with Graph Neural Networks that 
+naturally exploit the graph-structured topology of networks, these systems achieve improved 
+scalability, topology-awareness, and the ability to generalize across different network 
+configurations. \cite{wang2024multi} \cite{huang2025era} \cite{9974607} \cite{zhang2025dramadynamicpacketrouting} \cite{11134361}.
+
+\paragraph{}However DRL models have many well documented security vulnerabilities, consequences of which
+remain underexplored in the context of network routing. Common attacks such as the fast gradient sign method
+(FGSM) \cite{goodfellow2015explainingharnessingadversarialexamples}, the projected gradient descent (PGD)
+\cite{madry2019deeplearningmodelsresistant} and the Carlini and Wagner (CW) attack 
+\cite{carlini2017evaluatingrobustnessneuralnetworks} can manipulate model inputs to degrade performance or even implant backdoors
+as a gateway to further exploits \cite{dai2025effectivebackdoorattackgraph}. Some research has been done on the effects of adversarial 
+attacks on DRL models in the context of image classification, mostly focusing on 
+model robustness versus adversarial examples. \cite{wang2022attackingdefendingdeepreinforcement}
+\cite{goodfellow2015explainingharnessingadversarialexamples} \cite{villegas2024evaluating}.
+
+\paragraph{}This thesis aims to explore the effects of adversarial attacks on MADDPG and GNN models in the context of network routing.
+Specifically, we will investigate how these attacks impact the performance of these models when used for routing
+decisions in a simulated network environment. We will implement and adapt FGSM and PGD algorithms to the network context,
+evaluating their effectiveness in degrading network performance metrics accross diverse scenarios.
+
+\paragraph{}The main contributions of this thesis are as follows:
+\begin{itemize}
+    \item Adapting and validating FGSM and PGD adversarial attack algorithms to the 
+    context of network routing.
+    \item Evaluating the impact of these attacks on the performance of MADDPG and 
+    GNN routing agents across various network topologies and traffic patterns.
+\end{itemize}
+
+\paragraph{} The structure of this thesis preparation report is as follows: Chapter 1 provides an introduction
+to the research topic, outlining the motivation and objectives of the study. Chapter 2 reviews relevant literature,
+summarizing existing research on MADDPG, GNNs and adversarial attacks of respective architectures.
+Chapter 3 details the methodology and implementation of the working enviroment, FGSM and PGD adapted to the netwrok enviroment.

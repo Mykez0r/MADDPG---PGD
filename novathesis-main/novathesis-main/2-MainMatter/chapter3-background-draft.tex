@@ -1,0 +1,96 @@
+%!TEX root = ../template.tex
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% chapter3-background-draft.tex
+%%
+%% DRAFT: starting point of this work — which components are inherited and
+%% which are contributed here. Intended to open Chapter 3, before
+%% Section~\ref{sec:victim_architectures}.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Starting Point and Scope of This Work}
+\label{sec:starting_point}
+
+This work is the third stage of a line of research, and it is useful to state at
+the outset which components are inherited and which are contributed here, since the
+research question is comparative and therefore depends on the earlier stages
+remaining unchanged.
+
+\subsection{The routing system under test}
+\label{subsec:base_system}
+
+The victim is a multi-agent routing controller developed in earlier work within the
+same research line~\cite{amaral2021maddpg-routing}. It applies Multi-Agent Deep
+Deterministic Policy Gradient (MADDPG) to adaptive packet routing under the
+paradigm of centralised training with decentralised execution
+(CTDE)~\cite{lowe2017multi}: each agent $i$ holds an actor $\pi_{\theta_i}$ that
+conditions only on its own local observation, while its critic $Q_{\phi^i}$ may,
+during training, observe the joint state and the actions of every other agent.
+Conditioning the critic on the joint action is what stabilises learning, since from
+any single agent's perspective the environment would otherwise appear
+non-stationary as the other agents' policies evolve~\cite{lowe2017multi}. After
+training the critics are discarded and each agent acts on local information alone.
+In this routing formulation every forwarding node is an agent whose observation
+summarises local link utilisation, queue occupancy and the destinations awaiting
+service, and whose action selects, for each destination, one of $K$ pre-computed
+candidate paths; the trained system is thus a distributed controller in which no
+node holds a global view, yet the paths chosen collectively determine end-to-end
+delivery. That prior work also investigated critic design and graph-based state
+encoding, which is the origin of the variant family evaluated in
+Section~\ref{sec:victim_architectures}.
+
+This thesis does not modify the routing controller. The trained agents are treated
+as a fixed system under test: their parameters are frozen, and the adversary
+interacts with them only through forward evaluations and gradients taken with
+respect to their inputs.
+
+\subsection{The FGSM baseline}
+\label{subsec:base_fgsm}
+
+The second stage established the adversarial setting. A single-step attack based on
+the Fast Gradient Sign Method
+(FGSM)~\cite{goodfellow2015explainingharnessingadversarialexamples} was developed
+against these agents in a preceding dissertation in the same line of
+work~\cite{TODO-colleague-fgsm}. FGSM perturbs an input one step along the sign of
+the gradient of a loss with respect to that input,
+$\eta = \varepsilon \cdot \operatorname{sign}\!\big(\nabla_x J(\theta, x, y)\big)$,
+under an $\ell_\infty$ budget $\lVert \eta \rVert_\infty \le \varepsilon$. Applied
+to the routing controller, the victim is the trained actor, the input is an agent's
+local observation, and the objective rewards actions that degrade routing
+performance rather than ones that induce a misclassification. The threat model it
+fixed is \emph{observation-space} rather than actuation-space: the adversary
+corrupts what the agents perceive, modelling a compromised telemetry or monitoring
+plane, while the network itself continues to evolve according to its true state.
+
+That stage contributed not only an attack but an evaluation protocol --- the
+perturbation budget sweep, the frozen-victim assumption, and the metrics by which
+an attack is judged --- and it returned a negative result. The FGSM perturbation
+alters a substantial fraction of the routing decisions taken by the victim, yet
+recovers only a small part of the degradation achievable in principle, because the
+redundancy of the $K$-path topology absorbs the redirected traffic and leaves
+end-to-end delivery largely intact.
+
+\subsection{Contribution of this thesis}
+\label{subsec:contribution_scope}
+
+That negative result admits two readings: either the controller is genuinely
+robust, or a single-step, per-agent adversary is too weak for its failure to
+constitute evidence of robustness. Distinguishing between them requires a stronger
+adversary, and supplying one is the contribution of this work. Three extensions are
+developed, all within the inherited threat model: replacing the single gradient
+step with an iterated projected-gradient
+optimisation~\cite{madry2019deeplearningmodelsresistant}; coordinating the
+perturbation jointly across compromised agents rather than treating each in
+isolation (Section~\ref{subsec:coordinated_attack}); and concentrating a limited
+attack budget on high-leverage moments rather than spending it uniformly
+(Section~\ref{subsec:timed_attack}).
+
+Because the purpose is comparison rather than a stronger attack in isolation,
+compatibility with the earlier stage is a design constraint rather than a
+convenience. The attacks developed here operate on the same frozen agents, within
+the same $\ell_\infty$ ball and the same domain constraints, and are scored under
+the same evaluation protocol as the FGSM baseline. Any difference in measured
+damage is then attributable to the attack algorithm itself, rather than to a
+change in the adversary's capabilities or in the conditions of measurement; where
+this constraint forced a specific implementation choice, it is noted at the
+relevant point in the text.

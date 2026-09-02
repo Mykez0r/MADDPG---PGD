@@ -1,0 +1,126 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% nova/ensp/defaults.ldf
+%% NOVA thesis configuration file
+%%
+%% Customization for NOVA FCT (strings and cover)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\typeout{NT FILE nova/ensp/defaults.ldf}%
+
+\ntsetup{print/frontpage=true}
+
+% Faculty / School
+\school(pt):={Escola Nacional de Saúde Pública}
+\school(en):={National School of Public Heath}
+\school(fr):={Escola Nacional de Saúde Pública}
+\school(it):={Escola Nacional de Saúde Pública}
+
+% Scientific filed
+% \majorfield(pt):={«Área Científica»}
+% \majorfield(en):={“Scientific Field”}
+
+% Degree name
+\degreename(pt):={Nome do Curso}
+\degreename(en):={Degree Name}
+
+% Comiittee printing order
+\committeeorder():={c,r,m}%
+
+% Set margins for "normal" pages
+\margin(screen,top):={3.5cm}
+\margin(screen,bottom):={2.5cm}
+\margin(screen,left):={3.0cm}
+\margin(screen,right):={3.0cm}
+\margin(paper,top):={3.5cm}
+\margin(paper,bottom):={2.5cm}
+\margin(paper,left):={2.5cm}
+\margin(paper,right):={3.5cm}
+
+% Set margins for cover pages
+\margin(cover,top):={1.0cm}
+\margin(cover,bottom):={1.0cm}
+\margin(cover,left):={1.0cm}
+\margin(cover,right):={1.0cm}
+
+
+% Spine info
+% \spine(logo)={\theuniversity(logo)}
+
+\SpineSetup[%
+]{%
+  box/logo/bg/image           = {\theuniversity(logo)},
+  box/logo/bg/image/angle     = {-90},
+  % debug,
+}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Draw the cover page
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\AtEndPreamble{%
+  \LoadHelveticaLikeFont%
+  % \RequirePackage{gillius2}%
+}
+
+\NTAddToHook{cover/1-1/text/pre}{%
+  \sffamily%
+}
+\NTAddToHook{cover/2-1/text/pre}{%
+  \sffamily%
+}
+
+% ENSP logo
+\ntaddtocover[vspace=1cm,halign=c,valign=t]{1-1,2-1}{%
+  \@for\myi:={1,2,3,4,5}\do{%
+    % \typeout{MYI=\myi}
+    \datamatchtf{\match}{thesiscover}({logo,\myi},){%
+      % \typeout{MYI=\myi,[\thethesiscover(logo,\myi)]}\AAA
+      \StrCut{\match}{,}\myflg\myfile%
+      \ifnum\myi>1\hspace{1cm}\fi
+      \expanded{\includegraphics[\myflg,align=t]{\myfile}}%
+    }{%
+      % \typeout{MYI=\myi,[\thethesiscover(logo,\myi)]}\BBB
+    }%
+  }%
+}
+
+% % Title of Dissertation
+\ntaddtocover[vspace=1]{1-1,2-1}{%
+  \fontsize{14}{14}\selectfont
+  \textbf{\thedoctitle(\@LANG@COVER,main,cover)}
+}
+
+% % Title of Dissertation
+\ntaddtocover[vspace=1cm]{1-1,2-1}{%
+  \fontsize{14}{14}\selectfont
+  \thedegreename(\@LANG@COVER)
+}
+
+% Author name
+\ntaddtocover[vspace=1]{1-1,2-1}{%
+  \fontsize{12}{12}\selectfont
+  \textbf{\thedocauthor(name)}
+}
+
+% Degree
+\ntaddtocover[vspace=1]{2-1}{%
+  \fontsize{11}{11}\selectfont
+  \thepresentationtext
+}
+
+% Advisers
+\ntaddtocover[vspace=1]{2-1}{%
+  \fontsize{12}{12}\selectfont
+  \ntprintpersons{0.75}{2}{adviser}{a,c}%
+}
+
+% Date
+\ntaddtocover[vspace=1]{1-1,2-1}{%
+  \fontsize{12}{12}\selectfont
+    \printisodate{\thentdocdate(submission,year)-\thentdocdate(submission,month)}%
+}
+
+% % Final space
+\ntaddtocover[vspace=1cm]{1-1,2-1}{%
+  ~
+}

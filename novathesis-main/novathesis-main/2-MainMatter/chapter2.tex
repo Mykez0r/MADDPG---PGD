@@ -1,0 +1,887 @@
+%!TEX root = ../template.tex
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% chapter2.tex
+%% NOVA thesis document file
+%%
+%% Chapter with the template manual
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\typeout{NT FILE chapter2.tex}%
+
+\chapter{Literature review}
+This chapter reviews relevant literature on Multi-Agent Deep Deterministic Policy Gradient (MADDPG) and Graph Neural Networks (GNNs),
+We will explore their architectures, the proposed applications in network routing and current literature on their vulnerabilities to adversarial attacks.
+\section{DRL definition and overview}
+
+\textbf{Deep Reinforcement Learning (DRL)} is a subfield of machine learning that combines 
+reinforcement learning (RL) principles with deep neural networks to enable 
+agents to learn optimal policies in complex environments. In DRL, 
+an agent interacts with an environment by taking actions based on its current state, 
+receiving feedback in the form of rewards or penalties. The goal of the agent is to 
+learn a policy that maximizes the cumulative reward over time. 
+Unlike traditional rule-based approaches, DRL agents learn 
+directly from state observations, making them particularly 
+suited for network optimization tasks where hand-crafted rules cannot 
+capture the full complexity of system dynamics. \cite{theodoropoulos2023multi} \cite{10535707} \cite{lozanocuadra2024opensourcemultiagentdeep} 
+In the context of network 
+routing, DRL enables agents to discover adaptive forwarding policies that 
+respond to real-time network conditions (congestion, link failures, 
+traffic demands) without requiring explicit model of the environment. \cite{11227800} \cite{10730787} \cite{11122503}
+The environment is naturally modeled as a Markov Decision Process 
+(MDP) or Partially Observable MDP (POMDP) where states encode link loads and 
+topology information, actions correspond to next-hop or path selection decisions,
+and rewards capture delay, throughput, or composite QoS metrics. \cite{10684240}
+
+However, DRL models are vulnerable to adversarial attacks, where malicious actors can
+input adversarial examples designed to mislead the model into making incorrect decisions 
+\cite{szegedy2014intriguingpropertiesneuralnetworks},these are often called either evasion attacks when introduced during test-time
+or poisoning attacks when introduced during training. Lin et al. \cite{lin2019tacticsadversarialattackdeep} 
+further introduce ‘enchanting attacks’, which craft a sequence of adversarial 
+perturbations to drive the agent toward specific target states.
+\cite{yamabe2025robustdeepreinforcementlearning} \cite{dai2025effectivebackdoorattackgraph}
+These attacks exploit the inherent lack of robustness in the model, leading to suboptimal decision-making in many application areas. 
+\cite{alzubaidi2025adversarial} \cite{zhou2024adversarial} \cite{finlayson2019adversarialexample}
+Common adversarial attack methods include the Fast Gradient Sign Method (FGSM),
+Projected Gradient Descent (PGD),the Carlini and Wagner (CW) attack and more recently,
+the distribution-Aware Projected Gradient Descent (DAPGD). \cite{villegas2024evaluating} \cite{duan2025DADPG}
+
+
+\section{Deep Q-Networks}
+\textbf{Deep Q-Networks} integrate deep convolutional neural networks 
+with Q-learning, a reinforcement learning algorithm, to learn 
+optimal action-selection policies directly from high-dimensional sensory 
+inputs without manual feature engineering. \cite{mnih2013playingatarideepreinforcement} \cite{mnih2015human} The architecture parameterizes 
+the action-value function, the Q-function, using a deep neural network whose 
+input consists of preprocessed high-dimensional observations 
+(e.g., raw pixel data) and whose output comprises value estimates for each 
+possible action, representing the expected cumulative future reward associated
+with each action selection. Training stability, historically a critical challenge 
+when combining neural networks with temporal-difference learning, is achieved
+through two key mechanisms: experience replay, a technique
+wherein the network is trained on minibatches of randomly sampled 
+experiences drawn from a memory buffer, thereby breaking temporal correlations 
+in the observation sequence and smoothing shifts in the data distribution. \cite{mnih2013playingatarideepreinforcement} \cite{mnih2015human}
+The network is trained via
+stochastic gradient descent to minimize the temporal-difference error, 
+defined by the squared Bellman residual between the predicted Q-value 
+and the target value computed as the immediate reward plus the discounted 
+maximum Q-value ofthe subsequent state as estimated by the target network. \cite{mnih2013playingatarideepreinforcement}
+
+\begin{equation}
+L_i(\theta_i) = \mathbb{E}_{s,a \sim \rho(\cdot)} \left[ (y_i - Q(s, a; \theta_i))^2 \right]
+\end{equation}
+
+where the target value is:
+
+\begin{equation}
+y_i = \mathbb{E}_{s' \sim \mathcal{E}} \left[ r + \gamma \max_{a'} Q(s', a'; \theta_{i-1}) \Big| s, a \right]
+\end{equation}
+
+\begin{itemize}
+
+\item \textbf{$L_i(\theta_i)$}: Loss function at iteration $i$ with network parameters $\theta_i$
+
+\item \textbf{$\theta_i$}: Network parameters (weights and biases) at iteration $i$
+
+\item \textbf{$\theta_{i-1}$}: Network parameters from the previous iteration $i-1$ (held fixed during optimization of $L_i$)
+
+\item \textbf{$\mathbb{E}_{s,a \sim \rho(\cdot)}$}: Expectation over state-action pairs $(s,a)$ sampled from the behaviour distribution $\rho(s,a)$
+
+\item \textbf{$y_i$}: Target value (Bellman target) for iteration $i$
+
+\item \textbf{$Q(s, a; \theta_i)$}: Predicted action-value function (Q-function) that estimates the expected cumulative discounted reward for taking action $a$ in state $s$ using network parameters $\theta_i$
+
+\item \textbf{$r$}: Immediate scalar reward received from the environment after taking action $a$ in state $s$
+
+\item \textbf{$\gamma$}: Discount factor; a scalar in $[0, 1]$ that weights the importance of future rewards relative to immediate rewards
+
+\item \textbf{$\max_{a'} Q(s', a'; \theta_{i-1})$}: Maximum Q-value across all possible actions $a'$ in the successor state $s'$, computed using the previous iteration's parameters $\theta_{i-1}$
+
+\item \textbf{$s$}: Current state, represented as a sequence of preprocessed observations (e.g., stacked pixel frames)
+
+\item \textbf{$a$}: Action taken in state $s$; chosen from the discrete action set
+
+\item \textbf{$s'$}: Successor state resulting from taking action $a$ in state $s$
+
+\item \textbf{$\mathcal{E}$}: The environment (in the DQN paper: the Atari 2600 emulator \cite{mnih2013playingatarideepreinforcement}); transition dynamics are unknown and learned implicitly
+
+\item \textbf{$\rho(s,a)$}: Behaviour distribution; the probability distribution of state-action pairs encountered during training (typically from an $\epsilon$-greedy policy)
+
+\end{itemize}
+\cite{mnih2013playingatarideepreinforcement}
+
+DQN has been successfully applied to network routing tasks, 
+where the agent learns to make optimal forwarding decisions based on various
+real-time network state observations. A recent paper by Xuan Geng et al. (2025) \cite{10012647} Proposes a DQN-based
+routing protocol that optimizes both path selection and energy efficiency thereby
+significantly extending network lifetime of underwater acoustic sensor networks (UASNs).
+DQL has also been proposed as a solution to help Software Defined Networks (SDN) based
+data-centers dealing with "mice" flows, which are short-lived flows with realtively small
+data sizes that can congest the network if not handled properly and "elephant" flows,
+that are long lived and carry large amounts of data. 2 DQNs are built, one for each type
+of flow, that train Convulutional Neural Networks (CNN) to optimize routing decisions. \cite{9105030}
+
+\subsection{Duelling Q-networks}
+Dueling Network Architectures for Deep Reinforcement Learning represent a 
+structural innovation to the standard Deep Q-Network architecture in which the 
+action-value function is decomposed into two independent,
+streams that share a common feature representation before final aggregation 
+\cite{wang2016duelingnetworkarchitecturesdeep,zhao2025breakingcoldstartbarrierreinforcement}. Specifically, the architecture bifurcates into a value 
+stream $V(s; \theta_v)$ that estimates the scalar value of a given state 
+independent of action selection, and an advantage stream $A(s, a; \theta_a)$ that
+computes the relative advantage of executing a particular action within that
+state, with both streams processing shared convolutional features derived from
+the input observation \cite{wang2016duelingnetworkarchitecturesdeep}. The final action-value estimate is
+obtained through a dueling layer that performs a learned aggregation of these
+two quantities and provides 
+a normalization mechanism that stabilizes gradient-based learning and enforces 
+identifiability \cite{wang2016duelingnetworkarchitecturesdeep}. This architectural separation facilitates
+more efficient learning in domains where numerous actions yield 
+comparatively similar expected returns, by enabling the value and advantage streams 
+to specialize in capturing specific aspects of the policy structure while 
+maintaining a shared feature space, thereby improving sample efficiency 
+and convergence properties 
+\cite{wang2016duelingnetworkarchitecturesdeep}.
+
+In a recent paper by Zhang et al. (2022) \cite{ZHANG2022108663} a deep dueling Q-network based routing protocol
+helps optimize Routing and Spectrum Allocation (RSA) in Elastic Optical Networks (EONs).
+The proposed method leverages the dueling architecture to effectively learn 
+efficient resource allocation policies under dynamic traffic 
+conditions, where connection requests arrive and terminate unpredictably. The 
+decomposition of the Q-function into value and advantage streams allows the model to
+better judge the relative merits of different routing actions based on the 
+overall network congestion and fragmentation state
+thereby circumventing the learning inefficiency that arises when 
+traditional DQN attempts to differentiate between numerous 
+similar-valued routing actions across diverse network configurations.\cite{ZHANG2022108663}
+
+\section{MADDPG}
+
+\textbf{Multi-Agent Deep Deterministic Policy Gradient (MADDPG)} 
+is a deep reinforcement learning algorithm designed for multi-agent environments 
+that extends actor-critic methods through a centralized training with decentralized 
+execution framework, where each agent maintains a centralized action-value function 
+conditioned on agent actions during training while 
+using only local observations at execution time. To relax the assumption of knowing other 
+agent's policies, MADDPG enables each agent to maintain an approximate policy 
+of other agents by maximizing the log-probability of observed actions 
+with entropy regularization, 
+allowing subject agents to learn target agents policies before adapting accordingly. For enhanced robustness in competitive settings, MADDPG trains a 
+collection of different sub-policies per agent, randomly selecting one sub-policy 
+per episode and maintaining separate replay buffers for each 
+sub-policy , which maximizes the ensemble objective 
+such that agents develop diverse behavioral strategies that prevent overfitting to specific 
+opponent policies. \cite{lowe2017multi}
+
+However, this very architecture creates exploitable attack surfaces. 
+The centralized critic's dependence on gradient computations makes 
+MADDPG amenable to gradient-based adversarial perturbations, while 
+the decentralized execution phase means each agent operates 
+independently at test time, creating coordination vulnerabilities 
+when one or more agents receive adversarial inputs. \cite{10684240,pham2022c,li2025attacking}
+
+\subsection{MADDPG in Network Routing}
+A recent paper by Tian et al. (2023) \cite{Tian2023maddpgslice} proposes a MADDPG-based
+approach for solving the network slicing problem in 5G networks, a resource
+allocation problem where diverse service types with heterogeneous QoS requirements
+may, at any point, change their resource demands. The proposed method, MADDPG-SR
+,treats each virtual network function (VNF) as an agent that learns to allocate resources
+and migrate dynamically with the end goal of maintaining QOS requirements in every slice.
+The results show the proposed method outperforms non-MADDPG implementations. \cite{Tian2023maddpgslice}
+
+A recent paper by Huang et al. (2025) \cite{huang2025era} proposes ERA-MADDPG as an elastic routing scheme for 
+software-defined networks (SDNs) that casts routing optimization
+as a cooperative multi-agent decision-making problem and uses 
+Multi-Agent Deep Deterministic Policy Gradient (MADDPG) as its 
+learning backbone. In this framework, network entities 
+(e.g., switches or abstract routing agents) learn deterministic 
+policies that select paths or adjust forwarding behavior based on 
+observed traffic and topology information, while a centralized critic
+exploits global state during training to stabilize learning in the
+inherently non-stationary multi-agent environment. The resulting 
+actors are then deployed in a decentralized fashion, allowing each 
+agent to make fast local decisions that collectively adapt the 
+end-to-end routes to time-varying traffic conditions and QoS demands.
+By leveraging MADDPG, ERA-MADDPG overcomes key limitations of static 
+routing and single-agent RL methods, notably poor scalability and weak 
+coordination, enabling continuous “elastic” adjustment of routes to 
+jointly reduce delay, packet loss, and congestion while improving load
+balance. This method outperforms other DRL based algorithms on training
+efficiency and recovery in dynamic network topologies. \cite{huang2025era}
+
+Another recent design, RS-MADDPG, \cite{kuang2025rs} enables each node to learn a deterministic policy 
+that maps local observations to continuous routing decisions 
+(e.g., flow splitting ratios or next-hop selections) while 
+implicitly accounting for the actions of other agents, thereby 
+mitigating the non-stationarity that plagues independent RL approaches.
+By leveraging MADDPG's capacity for continuous action spaces
+and multi-agent credit assignment, RS-MADDPG dynamically adjusts 
+routes in response to real-time traffic patterns, link failures, 
+and varying QoS demands without requiring manual reconfiguration. 
+The algorithm's effectiveness is further enhanced by its ability to 
+converge approximately 30 training cycles earlier than baseline 
+methods, demonstrating that the Centralized Training Decentralized execution
+(CTDE) paradigm, caracteristic of MADDPG, accelerates learning 
+of cooperative policies that jointly minimize latency, balance loads,
+and maximize throughput. Consequently, RS-MADDPG not only 
+outperforms conventional protocols in key performance metrics
+but also provides a scalable, adaptive solution for delivering
+differentiated QoS services in modern SDN environments. \cite{kuang2025rs}
+
+An interesting development based on the MADDPG algorithm is the 
+Dynamic Packet Routing Algorithm using Multi-Agent Reinforcement Learning with Emergent Communication (DRAMA)
+\cite{zhang2025dramadynamicpacketrouting}. DRAMA utlizes the Centralized
+Training Decentralized Execution (CTDE) framework of MADDPG,
+but redesign the value-function architecture and information
+flow to overcome MADDPG's key limitations in packet routing.
+While MADDPG uses a Type‑II critic that takes explicit joint
+observation, action pairs as input, requiring fixed, enumerated
+discrete actions and becoming brittle when the action set 
+changes, DRAMA replaces this with a Q-network score layer that
+operates on topology-aware latent features extracted by an
+observation encoder and a graph-based emergent communication
+layer. This preserves the CTDE advantage
+of learning from joint observations and rewards while decoupling
+the Q-function from a fixed action index space, so the same trained
+network can seamlessly score newly appearing neighbors or cope with
+link/router failures without the need for extensive retraining. Empirically,
+this MADDPG-based CTDE training combined with DRAMA's communication
+and Q-network design yields comparatively better delivery rates and
+lower end-to-end latency than regular MADDPG implementations across
+a range of traffic loads and under dynamic topologies,
+demonstrating that DRAMA leverages the strengths of MADDPG's training
+paradigm while addressing its natural difficulty with
+scalable, adaptive routing. \cite{zhang2025dramadynamicpacketrouting} 
+
+Although the usage of MADDPG in network routing has increased in recent years,
+there is lack of research on the effects of adversarial attacks in this context.
+
+\section{Taxonomy on Adversarial attacks on MADDPG}
+
+Adversarial attacks against MADDPG can be systematically categorized
+along three dimensions: (1) perturbation domain 
+(state, action, communication, reward, model), (2) attack timing 
+(training-time vs. test-time), and (3) attacker knowledge 
+(white-box, gray-box, black-box).
+
+\begin{tikzpicture}[
+    node distance=0.6cm and 0.8cm,
+    every node/.style={font=\small},
+    box/.style={rectangle, draw, rounded corners, minimum width=1.4cm, minimum height=0.5cm, align=center},
+    root/.style={box, fill=blue!20, font=\bfseries\tiny},
+    category/.style={box, fill=cyan!15, font=\tiny},
+    attack/.style={box, fill=green!10, font=\tiny, minimum width=1.2cm},
+    ]
+    
+    % Root node
+    \node[root] (root) {Adversarial\\Attacks on\\MADDPG};
+    
+    % Category 1: Observation Space
+    \node[category, below=of root, xshift=-4.5cm, yshift=-1cm] (obs) {Observation\\Space};
+    \draw[-latex] (root) -- (obs);
+    \node[attack, below=of obs] (fgsm) {FGSM/\\PGD};
+    \node[attack, below=of fgsm] (saja) {SAJA};
+    \node[attack, below=of saja] (paad) {PA-AD};
+    \draw[-latex] (obs) -- (fgsm);
+    \draw[-latex] (obs) -- (saja);
+    \draw[-latex] (obs) -- (paad);
+    
+    % Category 2: Action Space
+    \node[category, below=of root, xshift=-2.7cm, yshift=-1cm] (action) {Action\\Space};
+    \draw[-latex] (root) -- (action);
+    \node[attack, below=of action] (direct) {Direct\\Action};
+    \node[attack, below=of direct] (wolf) {Wolfpack};
+    \node[attack, below=of wolf] (ami) {AMI};
+    \draw[-latex] (action) -- (direct);
+    \draw[-latex] (action) -- (wolf);
+    \draw[-latex] (action) -- (ami);
+    
+    % Category 3: Communication Space
+    \node[category, below=of root, yshift=-1cm] (comm) {Comm.\\Space};
+    \draw[-latex] (root) -- (comm);
+    \node[attack, below=of comm] (msg) {Message\\Hacking};
+    \node[attack, below=of msg] (adacomm) {Adaptive\\Comm.};
+    \draw[-latex] (comm) -- (msg);
+    \draw[-latex] (comm) -- (adacomm);
+    
+    % Category 4: Poisoning & Backdoor
+    \node[category, below=of root, xshift=2.7cm, yshift=-1cm] (poison) {Poisoning\\Backdoor};
+    \draw[-latex] (root) -- (poison);
+    \node[attack, below=of poison] (modpoi) {Model\\Poisoning};
+    \node[attack, below=of modpoi] (bdoor) {Backdoor};
+    \draw[-latex] (poison) -- (modpoi);
+    \draw[-latex] (poison) -- (bdoor);
+    
+    % Category 5: Transferability & Black-Box
+    \node[category, below=of root, xshift=4.5cm, yshift=-1cm] (transfer) {Transfer\\Black-Box};
+    \draw[-latex] (root) -- (transfer);
+    \node[attack, below=of transfer] (domain) {Domain\\Random.};
+    \node[attack, below=of domain] (bami) {Black-Box\\AMI};
+    \draw[-latex] (transfer) -- (domain);
+    \draw[-latex] (transfer) -- (bami);
+    
+\end{tikzpicture}
+
+
+\subsection{Observation Space Attacks}
+State-space attacks perturb the agent's observations
+before the actor network processes them. These attacks exploit the
+gradient-based learning mechanisms underlying neural network policies.
+
+\textbf{Gradient-Based State Perturbations}: The foundational approach 
+applies the Fast Gradient Sign Method (FGSM) or Projected Gradient 
+Descent (PGD) to compute adversarial observations. 
+FGSM performs a single-step perturbation in the gradient direction 
+of the loss function,\cite{goodfellow2015explainingharnessingadversarialexamples} while PGD extends this through iterative 
+optimization with projection \cite{madry2019deeplearningmodelsresistant}. However, according to Guo et al.\cite{guo2025sajastateactionjointattack} standard FGSM attacks on 
+MADDPG agents show limited effectiveness because the critic's 
+Q-value gradients alone provide unreliable guidance, imperfect critic 
+training leads to noisy gradients. \cite{Waghela_2024}
+
+\textbf{State-Action Joint Attacks (SAJA)}: Recent advances 
+recognize that state and action perturbations interact 
+synergistically. The SAJA framework operates in two phases: 
+(1) a multi-step gradient ascent on actor and critic networks to 
+compute adversarial states, then (2) a second gradient ascent using 
+the perturbed state to craft adversarial actions. 
+SAJA employs a balanced loss function combining negative Q-value 
+with an action distance term (Maximum Action Difference—MAD), 
+which proves that maximizing the multi-agent 
+action difference is a principled objective for degrading team value. \cite{guo2025sajastateactionjointattack}
+
+Empirical results demonstrate SAJA's effectiveness: reward drops 
+reach up to 9.90\% on 3-agent FACMAC, and SAJA bypasses defenses 
+including M3DDPG, PAAD, and ATLA. The synergy ratio of 
+joint attack impact to sum of individual attack impacts exceeds one
+confirming that joint state-action perturbations are more potent. \cite{guo2025sajastateactionjointattack}
+
+\textbf{Policy Adversarial Actor-Director (PA-AD)}: Rather than directly 
+learning state perturbations in high-dimensional spaces, 
+PA-AD proposes a Policy Adversary MDP (PAMDP) where an optimal 
+policy induces the optimal state adversary. The attack employs 
+collaborative "director" and "actor" components: the director learns 
+which policy perturbation directions are most effective, while the 
+actor crafts state perturbations to realize those directions. 
+PA-AD achieves state-of-the-art performance on Atari and MuJoCo 
+tasks, and combined with adversarial training, produces robust 
+policies that significantly outperform baseline defenses.\cite{sun2021strongest}
+
+\subsection{Action-Space Attacks}
+Action-space attacks directly manipulate an agent's output actions, 
+either through direct perturbation of action values or by injecting 
+adversarial agents that execute perturbed actions.
+
+\textbf{Direct Action Manipulation}: SAJA's action-only variant applies 
+gradient ascent on the critic network conditioned on the perturbed 
+state to craft final adversarial actions. These attacks are 
+particularly effective when attackers possess partial control over
+one or more agent's actuators. \cite{guo2025sajastateactionjointattack}
+
+\textbf{Malicious Agent Injection}: Rather than perturbing a single agent's 
+actions, attackers can inject fully adversarial agents into the 
+multi-agent system. These agents learn to disrupt the victim agent's 
+policies through direct behavioral interference. The Wolfpack attack 
+exemplifies this: by targeting a single agent and subsequently 
+attacking its supporting agents, adversaries exploit the inherent 
+interdependencies in cooperative systems. The Wolfpack approach 
+reduces rewards by up to 51.8\% and 
+severely impacts SMAC scenarios, proving far more effective than 
+random or single-agent attacks. \cite{lee2025wolfpackadversarialattackrobust}
+
+\textbf{Adversarial Minority Influence (AMI)}: AMI leverages social 
+psychology principles where a minority (adversary) unilaterally 
+sways the majority (victims) toward worst-case failure. AMI employs 
+two innovations: (1) a unilateral influence filter adapted from 
+mutual information that maximizes adversary-to-victim influence 
+while excluding reverse influence, and (2) a targeted adversarial 
+oracle that learns worst-case target actions. AMI successfully 
+attacks real robot swarms and simulation environments including 
+StarCraft II and multi-agent MuJoCo. \cite{li2025attacking}
+
+\subsection{Communication-Space Attacks}
+Multi-agent systems with explicit communication channels face a 
+distinct attack surface: adversarial manipulation of inter-agent 
+messages.
+
+\textbf{Message Hijacking}: The paper "Hijacking Robot Teams Through 
+Adversarial Communication" by Wu et al.\cite{wu2023hijacking} demonstrates that an adversarial policy 
+can intercept and modify messages between agents. The authors report several‑fold 
+performance degradation (e.g., more than four‑fold in some simulated predator–prey 
+tasks and roughly a factor of two in Robotarium experiments), illustrating that 
+adversarial communication can catastrophically disrupt team performance.
+The attack bypasses agents' native policies because the manipulated 
+messages are indistinguishable from benign communication within the 
+agents' learned policies.
+
+\textbf{Communication-Robust Learning}: Advanced attacks model adversarial 
+communication as a cooperative problem, learning adaptive attack 
+strategies that persistently disrupt coordination. The work on 
+differentially private communication reveals that privacy-preserving 
+mechanisms, while protecting against eavesdropping, do not 
+inherently defend against adversarial message perturbations.\cite{zhao2023dpmac,yuan2023communicationrobustmultiagentlearningadaptable}
+
+\subsection{Poisoning and Backdoor Attacks}
+Training-time attacks embed long-term vulnerabilities into learned 
+policies. \cite{dai2025effectivebackdoorattackgraph}
+
+\textbf{Model Poisoning via MARL Coordination}: In federated learning with 
+multiple poisoning attackers, attackers coordinate using MADDPG 
+itself to craft effective global model updates that degrade overall 
+system performance. The attack assumes attackers can approximate the
+benign data distribution, then formulate the poisoning problem as an 
+MDP where attackers jointly learn attack policies through MADDPG, 
+outperforming baseline poisoning methods. \cite{shen2021coordinated}
+
+\textbf{Backdoor Attacks (TrojDRL, BACKDOORL, BadRL, MARLNet)}: These 
+frameworks embed trigger conditions during training. Once triggered, 
+agents execute attacker-specified actions while appearing normal 
+otherwise. MARLNet specifically targets multi-agent scenarios using 
+imperceptible triggers and reward manipulation. Advanced backdoor 
+frameworks achieve near-perfect attack success rates (ASR approximating 99\%) 
+with minimal utility loss on benign tasks. Backdoor Vaccination, 
+where defenders inject controlled triggers—offers a proactive 
+defense by leveraging the backdoor concept itself. \cite{dai2025effectivebackdoorattackgraph,guo2025pnact,guo2023policycleanse,chen2022backdoorattacksmultiagentcollaborative}
+
+\subsection{Transferability and Black-Box Attacks}
+
+\textbf{Domain Randomization for Transfer}: Adversarial attacks trained on 
+diverse source environments transfer to unseen target policies. 
+Domain randomization across action spaces, reward functions, 
+transition dynamics, policy algorithms, and network structures 
+enables black-box or gray-box attacks without knowledge of target 
+specifics. Interestingly, attacks trained on randomized domains 
+sometimes outperform white-box attacks on the target, suggesting 
+that robust attacks develop from exposure to environmental diversity.
+\cite{pan2020transferable}
+
+Adversarial Minority Influence (Black-Box): AMI operates without 
+model access, learning attack policies through repeated interaction. 
+The unilateral influence filter enables the attacker to focus on 
+influencing victims while disregarding reverse effects, making the 
+attack practical in black-box settings.\cite{li2025attacking}
+
+
+
+\subsection{FGSM}
+\textbf{Fast Gradient Sign Method (FGSM)} \cite{goodfellow2015explainingharnessingadversarialexamples} is an efficient single-step gradient based
+technique for generating 
+adversarial examples, it leverages the adaptive nature of neural networks to create small perturbations
+that maximize the loss increase. It is defined as follows:
+\begin{equation}
+\eta = \epsilon \cdot \text{sign}(\nabla_x J(\theta, x, y))
+\end{equation}
+
+\noindent where:
+\begin{itemize}
+    \item $\theta$ denotes the model parameters
+    \item $x$ represents the input
+    \item $y$ is the target label
+    \item $J(\theta, x, y)$ is the cost function used to train de model
+\end{itemize}
+
+The resulting adversarial example is obtained as:
+
+\begin{equation}
+\tilde{x} = x + \epsilon \cdot \text{sign}(\nabla_x J(\theta, x, y))
+\end{equation}
+
+\noindent where $\epsilon$ is a small scalar controlling perturbation magnitude, 
+chosen to remain imperceptible to human observers while remaining sufficient to fool 
+the classifier. 
+
+This means that FGSM not only misleads models but makes them confident
+in the mistakes that they make, successfully "convincing" them that their
+missclassifications are correct with a significant success rate\cite{villegas2024evaluating}. Goodfellow et al. 
+\cite{goodfellow2015explainingharnessingadversarialexamples} propose 
+that FGSM's efficacy arises from the inherent linearity of neural 
+networks in high-dimensional spaces, fundamentally contradicting 
+the prevailing hypothesis that adversarial vulnerabilities stem 
+from deep network non-linearity.
+
+FGSM efficiency and simplicity have made it a widely used baseline for
+development of a wide range of sophisticated adversarial attack methods. \cite{akhtar2021advances}
+
+Rozsa et al. (2016) \cite{rozsa2016adversarial} extends FGSM by introducing
+the hot/cold (HC) approach, the hot/cold method operates at the 
+penultimate layer, constructing a feature vector that simultaneously 
+boosts value of features of a target "hot" class and reduces value of features of the original "cold" class
+enabling backpropagation to generate perturbations that push samples 
+toward different target classes.
+
+Kurakin et al. (2017) \cite{kurakin2017adversarialmachinelearningscale} proposes the Iterative
+Fast Gradient Sign Method (I-FGSM), the core methodology generates 
+adversarial examples dynamically during training: at each iteration, 
+adversarial examples are produced from clean samples using the current 
+network state and mixed into minibatches with clean examples,
+enabling balanced gradient updates through a weighted loss function.
+
+Xie et al. (2019) \cite{Xie_2019_CVPR} proposes Diverse Inputs Iterative 
+Fast Gradient Sign Method (DI²-FGSM), a principled extension of 
+FGSM that addresses the white-box-black-box transferability trade-off 
+inherent in the FGSM family of attacks. Rather than directly 
+maximizing the loss with respect to original inputs, as in I-FGSM \cite{kurakin2017adversarialmachinelearningscale}, 
+DI²-FGSM applies stochastic, differentiable transformations 
+(random resizing and padding) at each iteration with probability p
+, maximizing loss with respect to these transformed inputs.
+
+
+\subsection{PGD}
+\textbf{Projected Gradient Descent (PGD)} is an iterative adversarial attack method that 
+extends FGSM by applying multiple smaller perturbation steps.
+\noindent
+Projected Gradient Descent (PGD) is introduced by Madry et al. \cite{madry2019deeplearningmodelsresistant} 
+as a multi-step, adversarial attack that iteratively updates an input within a constrained perturbation set to 
+maximize loss. Concretely, for an allowed perturbation 
+set $S$ (typically an $\ell_\infty$-ball around a clean input $x$), PGD starts
+from an initial point $x_0 \in x + S$ and repeatedly applies gradient ascent on 
+the loss with respect to the input followed by projection back onto $x+S$ following
+the negative loss function:
+\[
+x_{t+1} = \Pi_{x+S}\bigl(x_t + \alpha\,\mathrm{sign}(\nabla_x L(\theta, x_t, y))\bigr),
+\]
+thereby seeking an adversarial example that attains high loss while 
+respecting the perturbation budget.
+They define budget types in the following categories:
+\begin{itemize}
+    \item $L_\infty$: This constraint sets a maximum modification budget for every pixel. By this definition FGSM is an $L_\infty$ single-step version of PGD.
+    \item $L_2$: This constraint sets a maximum modification budget based on the Euclidean distance between the original and adversarial images.
+    \item $L_1$: This constraint sets a maximum modification budget based on a set limit of which the sum of all modifications cannot exceed. (Not tested but implicitly compatible with PGD)
+\end{itemize}
+
+Through extensive experiments with random restarts, the authors demonstrate that PGD reliably finds local 
+maxima whose loss values are tightly concentrated, and thus regard PGD as 
+a "universal first-order adversary", meaning that 
+robustness to PGD is indicative of robustness to any attack that only uses 
+first-order (gradient) information. \cite{madry2019deeplearningmodelsresistant}
+
+A survey by Akhtar et al. (2021) \cite{akhtar2021advances} highlights a fenomenon called
+"label leaking" observed in FGSM adversarial training where the model actually 
+overfits for adversarial images resulting in higher accuracy on adversarial examples
+than on clean images. PGD's method avoids this issue by using random starts that increase
+variety of modifications. \cite{madry2019deeplearningmodelsresistant}
+
+\newpage
+\subsection{Overview of adversarial attacks}
+This subsection is for a summary and ease of reference of the attacks 
+mentioned previously. This is by no means an exhaustive list of adversarial
+attacks, but should give a good overview of the state of the art.
+
+\begin{table}[h!]
+\centering
+\caption{Taxonomy of Adversarial Attacks on MADDPG}
+\label{tab:maddpg_attacks}
+\begin{tabular}{|p{2.5cm}|p{3cm}|p{4cm}|p{3.5cm}|}
+\hline
+\textbf{Attack Domain} & \textbf{Attack Name} & \textbf{Mechanism} & \textbf{Efficacy} \\
+\hline
+\multirow{4}{2.5cm}{Observation Space} & FGSM/PGD & Single/iterative gradient-based state perturbations & Limited effectiveness; imperfect critic gradients \\
+\cline{2-4}
+ & SAJA & Two-phase gradient ascent on state then action with Maximum Action Difference (MAD) loss & 9.90\% reward drop (3a-FACMAC); synergy ratio $> 1$; bypasses M3DDPG, PAAD, ATLA \\
+\cline{2-4}
+ & PA-AD & Policy Adversary MDP with director-actor collaboration & SOTA on Atari/MuJoCo; outperforms FGSM/PGD \\
+\hline
+\multirow{3}{2.5cm}{Action Space} & Direct Action Manipulation & Gradient ascent on critic for action perturbations & Effective with partial actuator control; synergistic with state attacks \\
+\cline{2-4}
+ & Wolfpack Attack & Coordinated multi-stage targeting; exploit inter-agent dependencies & Up to 51.8\% reward reduction; severe SMAC impact \\
+\cline{2-4}
+ & AMI (Adversarial Minority Influence) & Unilateral influence filter + targeted adversarial oracle & Attacks robot swarms, StarCraft II, MuJoCo; black-box capable \\
+\hline
+\multirow{2}{2.5cm}{Communication Space} & Message Hijacking & Intercept and modify inter-agent messages & 465\% reduction (sim); 201\% (physical robots on Robotarium) \\
+\cline{2-4}
+ & Adaptive Communication Attacks & Learn persistent coordination disruption strategies & Bypasses privacy mechanisms; adaptive to learned patterns \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[h!]
+\centering
+\caption{Taxonomy of Adversarial Attacks on MADDPG part 2}
+\label{tab:maddpg_attacks2}
+\begin{tabular}{|p{2.5cm}|p{3cm}|p{4cm}|p{3.5cm}|}
+\hline
+\textbf{Attack Domain} & \textbf{Attack Name} & \textbf{Mechanism} & \textbf{Efficacy} \\
+\hline
+\multirow{3}{2.5cm}{Poisoning \& Backdoor} & Model Poisoning (Federated) & Attackers coordinate via MADDPG to craft poisoned global updates & Outperforms baseline poisoning; coordinated attack via MDP \\
+\cline{2-4}
+ & Backdoor Attacks & Embed imperceptible triggers during training; execute on trigger & ASR $\approx 99\%$; minimal utility loss on benign tasks \\
+\cline{2-4}
+ & PNAct (Safe RL Backdoor) & Positive/negative action samples toggling safe/unsafe behavior & Stealthy; increases safety violations while maintaining reward \\
+\hline
+\multirow{2}{2.5cm}{Transfer \& Black-Box} & Domain Randomization Transfer & Train on diverse environments; generalize to unseen targets & Transfers across policies, networks, action spaces; sometimes outperforms white-box \\
+\cline{2-4}
+ & AMI (Black-Box) & Learn attack policies via repeated interaction without model access & No model knowledge required; effective on real swarms \\
+\hline
+\end{tabular}
+\end{table}
+
+\newpage
+
+\section{Graph Neural Networks}
+\textbf{Graph Neural Networks (GNNs)}
+are a family of deep learning models designed to operate directly 
+on graph-structured data by iteratively propagating and aggregating 
+information along edges, so that each node (or graph) learns a 
+representation that encodes both its own attributes and the topology 
+of its neighborhood.Their core ideias are based on these principles:
+Local connectivity, weight sharing, and hierarchical feature extraction. 
+Modern surveys typically define GNNs as neural architectures that take a graph 
+as input and learn task-specific node, edge, or graph-level outputs
+via repeated “message passing” or neighborhood aggregation,
+distinguishing them from shallow network embedding methods that merely
+learn fixed vector lookups without parameter sharing across nodes. \cite{zhou2021graphneuralnetworksreview,zhang2022gnnreview,wu2021gnnreview,chami2022gnnreview}
+
+Across the four surveys, the most common taxonomy divides GNNs into 
+recurrent GNNs, convolutional GNNs, graph autoencoders, and 
+spatio-temporal GNNs (with attention-based and message-passing 
+variants largely falling under the convolutional category). 
+Recurrent GNNs (often called “GNNs” in the early literature) 
+define node states via recursive equations that iteratively update
+each node’s hidden representation using its own previous state and 
+the states of its neighbors until a fixed point is reached, followed 
+by a task-specific readout function. 
+Their main advantage is conceptual generality: 
+they naturally handle arbitrary graph structures 
+(directed/undirected, cyclic/acyclic) and can, in principle, 
+approximate complex relational dependencies by iterating message 
+passing to convergence. However, they are computationally expensive, 
+require contraction conditions for guaranteed convergence, and are 
+difficult to scale to large graphs because many recurrent steps and 
+storage of intermediate states are needed; these limitations largely 
+motivated the shift to feedforward, layer-stacked convolutional GNNs. 
+\cite{zhou2021graphneuralnetworksreview,zhang2022gnnreview,wu2021gnnreview,chami2022gnnreview}
+
+Convolutional GNNs (CGNNs) extend convolution from regular grids to graphs by 
+defining each layer as a localized aggregation over a node’s neighborhood.
+\cite{NIPS2015_536a76f9,tang2024chebnet} In the spectral view, this operation 
+is grounded in graph signal processing, with explicit notions of frequency, 
+smoothness, and graph filters. Polynomial filter approximations lead to spatially 
+localized convolutions and practical implementations, but exact spectral methods 
+are typically expensive and often restricted to transductive settings on a fixed 
+graph.
+\cite{zhou2021graphneuralnetworksreview,zhang2022gnnreview,wu2021gnnreview,chami2022gnnreview} As a result, classical spectral CGNNs offer strong theoretical foundations but are less natural to transfer across graphs with different topologies.
+
+Spatial CGNNs (such as GraphSAGE and message‑passing neural networks) instead define 
+convolutions directly in the node domain by aggregating neighbor features with 
+permutation‑invariant functions (e.g., mean, sum, max, attention), often 
+combined with neighborhood sampling to control complexity.\cite{jiawei2024graphsage++,raja2024artificial} Because the aggregation functions are shared across nodes and graphs, these models scale better to large graphs and naturally support inductive generalization to unseen nodes or entirely new graphs.\cite{zhou2021graphneuralnetworksreview,zhang2022gnnreview,wu2021gnnreview,chami2022gnnreview} At the same time, deep stacks of spatial layers can suffer from over‑smoothing, large‑graph performance can depend heavily on the sampling strategy, and the theoretical analysis is generally less mature than in strictly spectral formulations.
+
+Graph autoencoders (GAEs) form another major family. 
+An encoder GNN maps nodes or graphs into a latent space, 
+and a decoder attempts to reconstruct structural information 
+such as edges or the adjacency matrix, often under an unsupervised 
+or self‑supervised loss.\cite{xu2024hc,gao2022gae} This view unifies 
+many earlier network embedding methods within a single deep architecture: 
+the learned representations capture topology and attributes and can then be 
+reused for downstream tasks such as clustering, link prediction, or node 
+classification.\cite{zhou2021graphneuralnetworksreview,zhang2022gnnreview,wu2021gnnreview,chami2022gnnreview} GAEs are particularly useful when labels are scarce, and variational extensions allow modeling distributions over graphs. Their main drawbacks are the cost of decoders that operate on dense adjacency matrices, the risk that pure reconstruction objectives over‑prioritize structural fidelity over task‑relevant semantics, and sensitivity to design choices such as negative sampling and the balance between observed and unobserved edges.
+
+Spatio temporal GNNs (STGNNs) extend these architectures to graphs with time varying 
+signals or topology by combining graph convolutions with temporal models 
+such as recurrent networks, temporal convolutions, or attention mechanisms.
+\cite{jin2022stgnn,yin2025stgnn} 
+They are now a standard choice for applications like traffic 
+forecasting and human action recognition, where the graph structure 
+is relatively stable but node features evolve over time.\cite{wu2021gnnreview,zhou2021graphneuralnetworksreview} The main benefit is that STGNNs can model how information propagates through both space and time—for example, how congestion spreads across a road network—in an end‑to‑end trainable way. The cost is increased architectural and computational complexity, a greater need for labeled time‑series data, and more challenging regularization and interpretability due to the combined depth in the spatial and temporal dimensions.
+
+Overall, recent surveys converge on the 
+view that GNNs are message-passing architectures on graphs, 
+with recurrent, convolutional, autoencoding, and spatio-temporal 
+variants offering different trade-offs between expressivity, 
+scalability, transferability, and ease of training. \cite{zhou2021graphneuralnetworksreview,zhang2022gnnreview,wu2021gnnreview,chami2022gnnreview}
+
+\subsection{GNN applications in network routing}
+
+Graph Neural Networks (GNNs) have emerged as a promising tool for learning routing and 
+traffic engineering (TE) policies directly from network structure and traffic, with 
+an explicit goal of generalizing across topologies and traffic conditions. Existing 
+work can be organized into three main application axes: (i) GNNs as performance models 
+for routing, (ii) GNN+RL controllers for online routing/TE, and (iii) specialized, 
+generalizable GNN architectures for large-scale TE and domain-specific routing. \cite{jianggraph}
+
+Early work focuses on using GNNs as surrogate models of network behavior, predicting 
+performance metrics for given topologies, traffic variations, and routing configurations. 
+Rusek et al. (2019) \cite{rusek2019unveiling} show that message-passing GNNs can 
+accurately estimate per-link delay and loss, enabling fast evaluation of many 
+candidate routing schemes without full simulation. Subsequent studies, summarized in 
+Jiang et al. (2021) \cite{jianggraph} , extend this idea by feeding GNN predictions 
+into external optimizers or discovery based search procedures, transforming TE into a 
+learn,predict,optimize loop. This line of work primarily treats routing as a 
+supervised regression problem, with GNNs learning a differentiable mapping from 
+graph + routing configuration to performance.
+
+A second stream couples GNN encoders with deep reinforcement learning (DRL) to 
+directly learn routing or TE policies. G-Routing proposes a flexible online routing 
+framework where a GNN encodes the current topology, traffic matrix, and routing state, 
+predicting future path-level metrics that a DRL agent then uses to choose routes. \cite{wei2023grouting} 
+Experiments show that G-Routing converges faster and yields lower jitter and more 
+stable performance than shortest-path and traditional TE baselines under traffic 
+dynamics and failures. \cite{wei2023grouting} Similarly, GROM (Generalized Routing Optimization Method) 
+uses a GNN+DRL design to learn traffic-splitting policies; the authors encode split 
+ratios as link features and discretize the continuous action space into classification, 
+improving training stability and generalization to unseen topologies. \cite{Ding2024grom}
+
+
+More recent works \cite{zhou2025trafficengineeringlargescalenetworks} explicitly target generalization across networks and demand patterns 
+by designing GNN architectures aligned with classical TE formulations. 
+A representative approach constructs a TE-GNN whose graph includes paths, 
+source–destination demand pairs, links, and a global objective node, effectively 
+embedding the linear program structure of TE into a heterogeneous graph. Message 
+passing over this graph allows the GNN to learn correlations between paths, links, 
+traffic and the global objective (e.g., maximum link utilization), and experiments 
+indicate that such models can generalize TE policies to unseen topologies while 
+approximately respecting constraints.\cite{zhou2025trafficengineeringlargescalenetworks} 
+Jiang et al. (2024) \cite{jiang2024graph} broader survey situates these 
+models within a larger family of GNN-based control and optimization methods, 
+highlighting that TE and routing are a well studied application for GNNs.
+
+\section{Taxonomy on Adversarial attacks on GNNs}
+
+This subchapter will present contemporary research on adversarial attacks 
+against Graph Neural Networks (GNNs), caracterizing them in 6 categories. 
+The classification scheme addresses the unique challenges posed by 
+graph-structured data and the message-passing mechanisms of GNNs that attackers
+must address in their strategies.
+
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\textwidth]{Taxonomy_GNN.png}
+    \caption{Diagram of Adversarial Attack characteristics on Graph Neural Networks}
+    \label{fig:gnn_taxonomy}
+\end{figure}
+
+
+
+\subsection{Attacker knowledge}
+
+Adversarial attacks on GNNs can be categorized based on the attacker's 
+knowledge:
+
+\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\caption{Attacker's Knowledge (Information Access Level)}
+\label{tab:attacker_knowledge}
+\begin{tabularx}{\textwidth}{XXX}
+\toprule
+\textbf{White-Box} & \textbf{Gray-Box} & \textbf{Black-Box} \\
+\midrule
+Complete model access: parameters, architecture, training data, labels & 
+Limited access: training data and labels available; model parameters obscured & 
+Minimal access: only adjacency matrix, feature matrix, and query access to model outputs \\
+\addlinespace
+Gradient-based optimization feasible; represents worst-case vulnerability assessment & 
+Requires surrogate model training & 
+Query-efficient methods: reinforcement learning, genetic algorithms, or transfer from surrogate models \\
+\addlinespace
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\newpage
+\subsection{Attack Timing}
+Adversarial attacks on GNNs can be categorized by when they are deployed:
+
+\begin{itemize}
+    \item \textbf{Training-Time Attacks (Poisoning Attacks)}: Adversarial examples are injected 
+    into training data to manipulate the model's learned representations. \cite{luo2024survey,wei2020adversarial}
+    \item \textbf{Test-Time Attacks (Evasion Attacks)}: Adversarial examples are introduced
+    during test time to interfere with model predictions. \cite{luo2024survey,wei2020adversarial}
+\end{itemize}
+
+\subsection{Attack Strategy (Perturbation Goal)}
+
+Adversarial attacks on GNNs can be categorized based on their perturbation goals:
+
+\begin{itemize}
+    \item \textbf{Topology Attacks}: Manipulate the graph structure by adding or removing edges to mislead the GNN.
+    \item \textbf{Feature Attacks}: Alter node features to deceive the GNN's predictions.
+    \item \textbf{Hybrid Attacks}: Combine topology and feature perturbations to maximize attack effectiveness.
+\end{itemize}
+
+\subsection{Attack Manipulation}
+
+Adversarial attacks on GNNs can be categorized based on the manipulation method
+whose effectiveness is generally evaluated by stealth rate while maintaining success rates:
+
+\begin{itemize}
+    \item \textbf{Addition}: Introduce new nodes or edges to the graph.
+    \item \textbf{Removal}: Delete existing nodes or edges from the graph.
+    \item \textbf{Rewiring}: A mix of addition and removal.
+\end{itemize}
+
+\textbf{Rewiring} operations tend to preserve graph statistics 
+(node count, edge count, degree distribution) while enabling structural 
+perturbations, making them significantly less detectable. \cite{11261632}
+
+\subsection{Attack Specificity}
+
+Adversarial attacks on GNNs can be categorized based on their specificity:
+
+\begin{itemize}
+    \item \textbf{Targeted Attacks}: Aim to degrade specific model functions or characteristics.
+    \item \textbf{Untargeted Attacks}: Seek to degrade overall model performance without targeting specific functions.
+\end{itemize}
+
+\subsection{Task level}
+
+Adversarial attacks on GNNs can be categorized based on the level in which they operate:
+
+\begin{itemize}
+    \item \textbf{Node-Level Attacks}: Target individual nodes to mislead node classification or regression tasks. A key vulnerability at this level in GNNs is the assumption of local homophily. \cite{luo2024survey}
+    \item \textbf{Link-Level Attacks}: Focus on specific edges to disrupt link prediction tasks. At this level a common problem is the triadic closure disruption where nodes sometimes create links between them despite having another node which connects them, effectively creating a "triangle" \cite{11261632}
+    \item \textbf{Graph-Level Attacks}: Aim to alter entire graph structures to affect graph classification tasks. An exploitable vulnerability at this level is the graph pooling instability. \cite{11261632}
+\end{itemize}
+
+\subsection{Examples and characteristics of adversarial attacks on GNNs}
+
+This is by no means a thorough list of adversarial attacks on GNNs, but should give a good overview of the state of the art.
+
+\begin{table}[htbp]
+\centering
+\scriptsize
+\caption{Summary of Adversarial Attacks on GNNs}
+\label{tab:attack_matrix}
+\begin{tabularx}{\textwidth}{lccccccX}
+\toprule
+\textbf{Attack Method} & \textbf{Knowledge} & \textbf{Capability} & \textbf{Strategy} & \textbf{Manipulation} & \textbf{Goal} & \textbf{Task} \\
+\midrule
+
+Nettack \cite{Nettack} & White-box & Evasion & Topology & Rewiring & Targeted & Node \\
+
+Metattack \cite{metaattackgnn} & White-box & Poisoning & Topology & Rewiring & Untargeted & Node \\
+
+FGA \cite{chen2018fast} & White-box & Evasion & Topology & Rewiring & Targeted & Node \\
+
+RL-S2V \cite{RL-S2V} & Black-box & Evasion & Topology & Rewiring (edge flips) & Targeted & Node/Link \\
+
+PGD-Attack \cite{xu2019topology} & White-box & Evasion & Topology & Rewiring & Both & Node \\
+
+NIPA \cite{NIPA} & Gray-box & Poisoning & Hybrid & Inject nodes & Targeted & Node \\
+
+ReWatt \cite{ma2019attacking} & Black-box & Evasion & Topology & Rewiring & Untargeted & Graph \\
+
+IG-FGSM \cite{wu2019adversarial}& White-box & Evasion & Hybrid & Rewiring(Feature+Edge) & Both & Node \\
+
+\bottomrule
+\end{tabularx}
+\end{table} \cite{luo2024survey,wei2020adversarial}
+
+In the literature on graph adversarial learning,
+Nettack and Metattack are typically implemented with full access to model 
+parameters and gradients, which designates them as white-box attacks under 
+standard threat-model definitions \cite{Nettack,metaattackgnn}. However, some
+more recent analyses decribe it as gray-box when 
+emphasizing that the optimized perturbations are later 
+transferred to a separate victim models. \cite{luo2024survey,wei2020adversarial}
+
+\subsection{Transferability-Focused Attacks}
+
+Recent work demonstrates that adversarial examples transfer across GNN 
+architectures, datasets, and even task levels. GOttack leverages graph 
+orbit learning to generate universal perturbations effective against 
+multiple GNN variants. Migratability studies show 70-85\% attack success 
+rate when transferring between GCN, GAT, and GraphSAGE. \cite{11004852,11199215}
+
+

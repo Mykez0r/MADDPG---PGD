@@ -1,0 +1,595 @@
+%!TEX root = ../template.tex
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% chapter3.tex
+%% NOVA thesis document file
+%%
+%% Chapter with a short latex tutorial and examples
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\typeout{NT FILE chapter3.tex}%
+
+\makeatletter
+\newcommand{\ntifpkgloaded}{%
+  \@ifpackageloaded%
+}
+\makeatother
+
+
+\chapter{Methodology}
+
+Companion studies  and  have shown that a MADDPG based network is robust against FGSM style attacks, individual agents attacking all 
+links in a network during every step is ineffective despite having white-box access to reward and critic structures.
+We will investigate whether a PGD style attack might be more effective, by implementing coordinated multi-agent attacks instead individual
+agent efforts, and by implementing strategically timed attacks during naturally occurring link failures instead of attempting
+to brute force every step.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Starting Point and Scope of This Work}
+\label{sec:starting_point}
+
+This work is the third stage of a line of research, and it is useful to state at
+the outset which components are inherited and which are contributed here, since the
+research question is comparative and therefore depends on the earlier stages
+remaining unchanged.
+
+\subsection{The routing system under test}
+\label{subsec:base_system}
+
+The victim is a multi-agent routing controller developed in earlier work within the
+same research line~\cite{amaral2021maddpg-routing}. It applies Multi-Agent Deep
+Deterministic Policy Gradient (MADDPG) to adaptive packet routing under the
+paradigm of centralised training with decentralised execution
+(CTDE)~\cite{lowe2017multi}: each agent $i$ holds an actor $\pi_{\theta_i}$ that
+conditions only on its own local observation, while its critic $Q_{\phi^i}$ may,
+during training, observe the joint state and the actions of every other agent.
+Conditioning the critic on the joint action is what stabilises learning, since from
+any single agent's perspective the environment would otherwise appear
+non-stationary as the other agents' policies evolve~\cite{lowe2017multi}. After
+training the critics are discarded and each agent acts on local information alone.
+In this routing formulation every forwarding node is an agent whose observation
+summarises local link utilisation, queue occupancy and the destinations awaiting
+service, and whose action selects, for each destination, one of $K$ pre-computed
+candidate paths; the trained system is thus a distributed controller in which no
+node holds a global view, yet the paths chosen collectively determine end-to-end
+delivery. That prior work also investigated critic design and graph-based state
+encoding, which is the origin of the variant family evaluated in
+Section~\ref{sec:victim_architectures}.
+
+This thesis does not modify the routing controller. The trained agents are treated
+as a fixed system under test: their parameters are frozen, and the adversary
+interacts with them only through forward evaluations and gradients taken with
+respect to their inputs.
+
+\subsection{The FGSM baseline}
+\label{subsec:base_fgsm}
+
+The second stage established the adversarial setting. A single-step attack based on
+the Fast Gradient Sign Method
+(FGSM)~\cite{goodfellow2015explainingharnessingadversarialexamples} was developed
+against these agents in a preceding dissertation in the same line of
+work~\cite{TODO-colleague-fgsm}. FGSM perturbs an input one step along the sign of
+the gradient of a loss with respect to that input,
+$\eta = \varepsilon \cdot \operatorname{sign}\!\big(\nabla_x J(\theta, x, y)\big)$,
+under an $\ell_\infty$ budget $\lVert \eta \rVert_\infty \le \varepsilon$. Applied
+to the routing controller, the victim is the trained actor, the input is an agent's
+local observation, and the objective rewards actions that degrade routing
+performance rather than ones that induce a misclassification. The threat model it
+fixed is \emph{observation-space} rather than actuation-space: the adversary
+corrupts what the agents perceive, modelling a compromised telemetry or monitoring
+plane, while the network itself continues to evolve according to its true state.
+
+That stage contributed not only an attack but an evaluation protocol --- the
+perturbation budget sweep, the frozen-victim assumption, and the metrics by which
+an attack is judged --- and it returned a negative result. The FGSM perturbation
+alters a substantial fraction of the routing decisions taken by the victim, yet
+recovers only a small part of the degradation achievable in principle, because the
+redundancy of the $K$-path topology absorbs the redirected traffic and leaves
+end-to-end delivery largely intact.
+
+\subsection{Contribution of this thesis}
+\label{subsec:contribution_scope}
+
+That negative result admits two readings: either the controller is genuinely
+robust, or a single-step, per-agent adversary is too weak for its failure to
+constitute evidence of robustness. Distinguishing between them requires a stronger
+adversary, and supplying one is the contribution of this work. Three extensions are
+developed, all within the inherited threat model: replacing the single gradient
+step with an iterated projected-gradient
+optimisation~\cite{madry2019deeplearningmodelsresistant}; coordinating the
+perturbation jointly across compromised agents rather than treating each in
+isolation (Section~\ref{subsec:coordinated_attack}); and concentrating a limited
+attack budget on high-leverage moments rather than spending it uniformly
+(Section~\ref{subsec:timed_attack}).
+
+Because the purpose is comparison rather than a stronger attack in isolation,
+compatibility with the earlier stage is a design constraint rather than a
+convenience. The attacks developed here operate on the same frozen agents, within
+the same $\ell_\infty$ ball and the same domain constraints, and are scored under
+the same evaluation protocol as the FGSM baseline. Any difference in measured
+damage is then attributable to the attack algorithm itself, rather than to a
+change in the adversary's capabilities or in the conditions of measurement; where
+this constraint forced a specific implementation choice, it is noted at the
+relevant point in the text.
+
+% ─────────────────────────────────────────────────────────────────────────────
+
+\section{Victim Architectures Under Test}
+\label{sec:victim_architectures}
+
+The attacks are evaluated against the family of trained variants inherited from the
+base system~\cite{amaral2021maddpg-routing} rather than against a single model, so
+that conclusions about the routing task can be separated from conclusions about one
+particular network design. All variants share the same actor: a multilayer
+perceptron mapping the local observation to $n_d$ blocks of $K$ path scores, with
+the executed route given by the $\arg\max$ within each block. They differ along
+three binary axes, described below.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Central (CC) versus local (LC) critic}
+\label{subsec:axis_critic_domain}
+
+The two critic domains differ in what the value function is allowed to observe
+during training:
+\begin{equation}
+  \underbrace{Q_{\phi^i}\big(\mathbf{s}, a_1, \dots, a_N\big)}_{\text{CC:\ } N(d_{\text{obs}} + |\mathcal{A}|)}
+  \qquad\text{versus}\qquad
+  \underbrace{Q_{\phi^i}\big(s^{\text{local}}_i, a_i\big)}_{\text{LC:\ } d_{\text{obs}} + |\mathcal{A}|},
+  \label{eq:arch_critic_domains}
+\end{equation}
+
+\noindent with $d_{\text{obs}}$ the per-agent observation dimension and
+$|\mathcal{A}| = n_d K$ the per-agent action dimension. The central critic is the
+canonical MADDPG construction~\cite{lowe2017multi}: conditioning on the joint action
+removes the non-stationarity each agent would otherwise face as its peers' policies
+change, at the cost of an input that grows linearly in the number of agents. The
+local critic reduces the scheme to independent actor--critic learners; it forfeits
+that guarantee but is far cheaper and its size is independent of the agent count.
+
+The distinction also determines which attack objectives are available. Because the
+central critic is an explicit function of \emph{all} agents' actions, it supplies a
+non-separable objective that couples the compromised agents, used in
+Equation~\eqref{eq:obj_critic}. Local-critic variants admit no such objective and
+are attacked with the congestion objective of Equation~\eqref{eq:obj_congestion}
+instead.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Simple versus duelling value head}
+\label{subsec:axis_value_head}
+
+The simple head passes the concatenated state and action through two rectified
+hidden layers and emits a scalar. The duelling head replaces the output layer with
+two parallel streams whose outputs are summed, $Q(s,a) = V(h) + A(h)$.
+
+One caveat should be stated. In the original duelling formulation the advantage
+stream emits one value \emph{per action}, and subtracting the mean advantage makes
+the split identifiable. Here the action is an \emph{input} to the critic rather than
+an output index, so both streams emit scalars and no such constraint is applied: any
+constant may be shifted between $V$ and $A$ without changing $Q$. The duelling head
+is thus an extra parallel projection rather than a value--advantage separation, and
+differences it produces should be attributed on that basis.
+% TODO: cite Wang et al. (2016), Duelling Network Architectures, once added to the .bib
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{With and without GNN encoding}
+\label{subsec:axis_gnn}
+
+The GNN variants insert a shared encoder between the environment and the actor.
+Each agent is a graph node whose features are its full observation, edges come from
+the trainable subgraph of the physical topology, and two \texttt{GraphConv} layers
+aggregate neighbour information under a residual connection:
+\begin{equation}
+  \tilde{\mathbf{X}} = \mathrm{ReLU}\Big(
+     \mathrm{GraphConv}_2\big(\mathrm{ReLU}(\mathrm{GraphConv}_1(\mathbf{X}, E)), E\big)
+     + \mathbf{X} \Big).
+  \label{eq:arch_gnn}
+\end{equation}
+
+\noindent The encoder is dimension-preserving, so it is a drop-in pre-processor and
+the actor is unchanged between variants, and the residual connection makes it a
+near-identity transform at initialisation. Optional relay nodes representing transit
+switches carry zero features and act purely as message-passing intermediaries,
+propagating observations two hops through the topology.
+
+The consequence for the attacks is structural rather than one of degree: without the
+encoder an agent's policy reads its own observation alone, whereas with it a
+perturbation applied to one agent reaches its neighbours' encoded states before
+their actors. The single-agent differentiable path assumed by the critic-grounded
+attack therefore does not hold for these variants, which must be attacked with the
+joint formulation of Section~\ref{subsec:coordinated_attack} or excluded from that
+comparison.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Variant matrix}
+\label{subsec:variant_matrix}
+
+\begin{table}[htbp]
+  \centering
+  \caption{MADDPG victim variants under test, named
+           \texttt{<critic domain>-<value head>[-GNN]}.}
+  \label{tab:variant_matrix}
+  \begin{tabular}{llll}
+    \hline
+    \textbf{Variant} & \textbf{Critic} & \textbf{Value head} & \textbf{GNN} \\
+    \hline
+    CC-Simple        & Central & Simple   & --- \\
+    CC-Duelling      & Central & Duelling & --- \\
+    CC-Simple-GNN    & Central & Simple   & Yes \\
+    CC-Duelling-GNN  & Central & Duelling & Yes \\
+    LC-Simple        & Local   & Simple   & --- \\
+    LC-Duelling      & Local   & Duelling & --- \\
+    LC-Duelling-GNN  & Local   & Duelling & Yes \\
+    \hline
+  \end{tabular}
+\end{table}
+
+The matrix is not the full $2\times2\times2$ factorial: \texttt{LC-Simple-GNN} is
+omitted, as the local-critic value-head comparison is already covered by
+\texttt{LC-Simple}/\texttt{LC-Duelling} and the GNN comparison by
+\texttt{LC-Duelling}/\texttt{LC-Duelling-GNN}. Where a single variant is reported,
+\texttt{CC-Simple} serves as the reference configuration, being the canonical MADDPG
+formulation with no additional architectural machinery.
+
+
+\section{PGD-Based Adversarial Attacks on MADDPG Routing Agents}
+\label{subsec:pgd_maddpg}
+
+\paragraph{}
+
+Formally, given a clean input $x$, label $y$, model parameters $\theta$, loss function $L(\theta, x, y)$, a perturbation budget $\varepsilon$, a step size $\alpha$ and a norm constraint set
+\begin{equation}
+    \mathcal{S}(x,\varepsilon) = \{ x' \mid \lVert x' - x \rVert_p \le \varepsilon \},
+\end{equation}
+PGD generates an adversarial example $x^{\text{adv}}$ by iterating
+\begin{align}
+    x^{(0)}      & = x + \delta_0, \quad \delta_0 \sim \text{Unif}(\mathcal{S}(0,\varepsilon)), \\
+    x^{(t+1)}    & = \Pi_{\mathcal{S}(x,\varepsilon)} \Bigl( x^{(t)} 
+                    + \alpha \cdot \mathrm{sign}\bigl( \nabla_x L(\theta, x^{(t)}, y) \bigr) \Bigr),
+\end{align}
+where $\Pi_{\mathcal{S}(x,\varepsilon)}(\cdot)$ denotes the projection operator onto the set $\mathcal{S}(x,\varepsilon)$ and the sign
+ operator corresponds to $\ell_\infty$-constrained PGD~\cite{madry2019deeplearningmodelsresistant}. After $T$ steps, $x^{\text{adv}} = x^{(T)}$ is used as the adversarial example.
+
+We adapt PGD to the MADDPG routing environment by implementing two key features on top of the FGSM 
+baseline.
+\begin{itemize}
+\item \textbf{(A) Coordinated Multi-Agent Perturbation:} By replacing the independent per-agent loop
+with a joint adversary we can direct several compromised agents to a single shared surviving link.
+\item \textbf{(B) Strategically-timed / critical-state attack:} By providing a L0 budget (limited attack budget)
+and monitoring of the network with a critical-state score, we can trigger the attack at critical moments when network
+failsafe redundacies are thinner.
+\end{itemize}
+
+\subsection{Threat model and admissible perturbation set}
+\label{subsec:threat_model_pgd}
+
+Both extensions share a single threat model, which is deliberately identical to the
+one used for the FGSM baseline so that any
+observed difference in damage is attributable to the attack itself rather than to a
+change in the attacker's capabilities.
+
+Let $\mathcal{C} \subseteq \{1,\dots,M\}$ denote the set of compromised agents and
+$N = |\mathcal{C}|$ its cardinality. The victim policies $\{\pi_{\theta_i}\}$ and
+critics $\{Q_{\phi^i}\}$ are \emph{frozen}: their parameters are fixed throughout,
+and the adversary interacts with them only through forward evaluations and
+gradients taken with respect to the \emph{input} observations. No victim parameter
+is ever updated, so the attack measures the robustness of a fixed trained policy
+rather than the outcome of an adversarial training game.
+
+The adversary perturbs observations only; the underlying network state evolves from
+the true, unperturbed dynamics. For agent $i$ at time $t$ the admissible set is
+\begin{equation}
+  \mathcal{S}\big(s_{i,t}^{\text{local}}, \varepsilon\big) =
+  \Big\{ \hat{s} \;\Big|\;
+    \big\| \hat{s} - s_{i,t}^{\text{local}} \big\|_{\infty} \le \varepsilon,
+    \;\; \hat{s} \in \mathcal{D}
+  \Big\},
+  \label{eq:admissible_set}
+\end{equation}
+
+\noindent where $\mathcal{D}$ is the domain constraint that re-projects the
+normalised bandwidth features onto $[0,1]$. The corresponding projection operator
+$\Pi_{\mathcal{S}}$ therefore composes an $\ell_{\infty}$ clip about the clean
+observation with the same domain clip used by the FGSM baseline. Because
+the measured damage depends on the size of the admissible set, the \emph{same}
+operator $\Pi_{\mathcal{S}}$ is applied to every attack and to the random control
+of Section~\ref{subsec:eval_protocol}; using a stricter domain clip for one attack
+than another would confound the perturbation direction with the size of the set it
+is drawn from.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{(A) Coordinated multi-agent perturbation}
+\label{subsec:coordinated_attack}
+
+\subsubsection*{Separability of the per-agent attack}
+
+The FGSM baseline, and any attack that iterates over agents independently, solves
+$N$ decoupled problems: for each $i \in \mathcal{C}$,
+\begin{equation}
+  \eta_{i,t}^{\star} = \arg\max_{\eta \,:\, s_{i,t}^{\text{local}} + \eta \in \mathcal{S}}
+  \; \mathcal{L}_{i}\big(s_{i,t}^{\text{local}} + \eta\big),
+  \label{eq:separable_attack}
+\end{equation}
+
+\noindent where $\mathcal{L}_i$ depends only on agent $i$'s own observation and
+policy. The joint perturbation obtained this way is the concatenation of $N$
+independent solutions, and the implied joint objective is \emph{separable},
+\begin{equation}
+  \mathcal{J}_{\text{sep}}(\hat{\mathbf{s}}_t)
+  = \sum_{i \in \mathcal{C}} \mathcal{L}_i(\hat{s}_{i,t}),
+  \label{eq:separable_objective}
+\end{equation}
+
+\noindent so no term couples two agents. This is a structural limitation rather
+than a matter of attack strength: a separable objective cannot express a preference
+for outcomes that depend on \emph{which} agents are steered onto the \emph{same}
+resource, because the value of steering agent $i$ onto a link is independent of
+whether agent $j$ was steered onto it as well. In a topology whose robustness comes
+from $K$-path redundancy, the damaging configurations are precisely those in which
+several redirected flows converge on one surviving link, and these lie outside the
+reach of Equation~\eqref{eq:separable_objective}.
+
+\subsubsection*{Joint formulation}
+
+We therefore optimise over the joint perturbation directly. Writing
+$\mathbf{s}_t = \big(s_{1,t}^{\text{local}}, \dots, s_{N,t}^{\text{local}}\big)$ for
+the stacked observations of the compromised agents, the coordinated attack solves
+\begin{equation}
+  \hat{\mathbf{s}}_t^{\star}
+  = \arg\max_{\hat{\mathbf{s}} \,\in\, \mathcal{S}(\mathbf{s}_t, \varepsilon)^{N}}
+  \; \mathcal{J}\big(\hat{\mathbf{s}}\big),
+  \label{eq:joint_attack}
+\end{equation}
+
+\noindent with a \emph{non-separable} global objective $\mathcal{J}$. A single
+gradient of $\mathcal{J}$ supplies a descent direction for every compromised agent
+simultaneously, so one optimisation step trades the agents off against one another.
+
+\subsubsection*{Differentiating through the routing decision}
+
+The environment decodes a routing decision by taking, for each destination $d$, the
+$\arg\max$ over the $K$ candidate paths. The realised route is therefore a piecewise
+constant function of the observation, and its gradient vanishes almost everywhere,
+which would leave Equation~\eqref{eq:joint_attack} without usable first-order
+information. We adopt a straight-through estimator: the forward pass uses the hard
+per-destination one-hot decision actually executed by the environment, while the
+backward pass propagates the gradient of the underlying softmax policy,
+\begin{equation}
+  \mathrm{ST}\big(\pi_{\theta_i}(\hat{s})\big)
+  = \operatorname{sg}\!\Big[
+      \operatorname{onehot}\big(\pi_{\theta_i}(\hat{s})\big) - \pi_{\theta_i}(\hat{s})
+    \Big] + \pi_{\theta_i}(\hat{s}),
+  \label{eq:straight_through}
+\end{equation}
+
+\noindent where $\operatorname{sg}[\cdot]$ denotes the stop-gradient operator and
+$\operatorname{onehot}(\cdot)$ is applied blockwise, one block of $K$ entries per
+destination. This choice matters for interpreting the results: the gradient is
+informative about how to \emph{change a routing decision}, which is not the same
+quantity as how to \emph{cause congestion}, and the two coincide only when the
+network cannot absorb the redirected flow.
+
+\subsubsection*{Attack objectives}
+
+Two instantiations of $\mathcal{J}$ are considered. The first is grounded in the
+victim's own centralised critics, evaluated on the joint action induced by the
+perturbed observations,
+\begin{equation}
+  \mathcal{J}_{\text{critic}}(\hat{\mathbf{s}})
+  = -\frac{1}{N} \sum_{i \in \mathcal{C}}
+    Q_{\phi^i}\Big( x_t, \; \big(\tilde{a}_1, \dots, \tilde{a}_N \big) \Big),
+  \qquad
+  \tilde{a}_j = \mathrm{ST}\big(\pi_{\theta_j}(\hat{s}_j)\big),
+  \label{eq:obj_critic}
+\end{equation}
+
+\noindent where $x_t$ is the true centralised state, held fixed during the attack.
+Because the centralised critic of the CTDE formulation
+(Section~\ref{subsec:axis_critic_domain}) takes the actions of \emph{all} agents as
+input~\cite{lowe2017multi}, it is by construction a non-separable function of the
+joint perturbation, and ascending $-Q$ steers the joint action towards the region
+the victim's own value model rates as worst.
+
+The second objective targets the shared-bottleneck mechanism explicitly. Let
+$u^{(i)}_{d,k}$ denote the true bottleneck utilisation of the $k$-th candidate path
+to destination $d$ for agent $i$, read from the \emph{clean} observation, and let
+$[\tilde{a}_i]_{d,k}$ be the corresponding entry of the straight-through action.
+Then
+\begin{equation}
+  \mathcal{J}_{\text{cong}}(\hat{\mathbf{s}})
+  = \sum_{i \in \mathcal{C}} \sum_{d} \sum_{k}
+    \big[\tilde{a}_i\big]_{d,k} \; u^{(i)}_{d,k}.
+  \label{eq:obj_congestion}
+\end{equation}
+
+\noindent Summing over agents rewards configurations in which several agents are
+steered onto the same congested path, which is the mechanism under test. The
+utilisation coefficients are taken from the clean observation rather than the
+perturbed one; were they read from $\hat{\mathbf{s}}$, the attacker would be
+optimising against its own forged view of the network instead of its true state.
+
+\subsubsection*{Joint projected gradient ascent}
+
+Equation~\eqref{eq:joint_attack} is solved by projected gradient ascent following
+the standard PGD construction~\cite{madry2019deeplearningmodelsresistant}, applied
+to the stacked perturbation. Starting from a uniformly random point inside the ball,
+\begin{align}
+  \hat{\mathbf{s}}^{(0)}   & = \Pi_{\mathcal{S}}\big( \mathbf{s}_t + \boldsymbol{\delta}_0 \big),
+    \qquad \boldsymbol{\delta}_0 \sim \mathrm{Unif}\big(\mathcal{S}(0,\varepsilon)^{N}\big), \\
+  \hat{\mathbf{s}}^{(\tau+1)} & = \Pi_{\mathcal{S}}\Big(
+      \hat{\mathbf{s}}^{(\tau)} + \alpha \cdot
+      \operatorname{sign}\big( \nabla_{\hat{\mathbf{s}}} \mathcal{J}(\hat{\mathbf{s}}^{(\tau)}) \big)
+    \Big).
+  \label{eq:joint_pgd_iteration}
+\end{align}
+
+The random initialisation is what distinguishes PGD from the iterative FGSM variant,
+which starts from the clean point~\cite{kurakin2017adversarialmachinelearningscale};
+the procedure is repeated from $R$ independent random starts and the iterate
+achieving the highest objective is retained, since the local maxima of the inner
+problem are distinct but concentrated in value~\cite{madry2019deeplearningmodelsresistant}.
+The step size defaults to $\alpha = 2.5\,\varepsilon / T$ for $T$ iterations, which
+guarantees the boundary of the ball is reachable from any interior starting
+point~\cite{madry2019deeplearningmodelsresistant}. The full procedure is given in
+Algorithm~\ref{alg:coordinated_pgd}.
+
+\begin{algorithm}[H]
+\SetAlgoLined
+\DontPrintSemicolon
+\KwIn{clean observations $\mathbf{s}_t$; centralised state $x_t$; budget $\varepsilon$;
+      steps $T$; step size $\alpha$; restarts $R$; objective $\mathcal{J}$}
+\KwOut{adversarial observations $\hat{s}_{i,t}$ for all $i \in \mathcal{C}$}
+$\mathcal{J}^{\text{best}} \leftarrow -\infty$\;
+$U \leftarrow$ path utilisations read from the clean $\mathbf{s}_t$\;
+\For{$r \leftarrow 1$ \KwTo $R$}{
+  $\hat{\mathbf{s}} \leftarrow \Pi_{\mathcal{S}}\big(\mathbf{s}_t + \boldsymbol{\delta}_0\big)$,
+    \quad $\boldsymbol{\delta}_0 \sim \mathrm{Unif}(\mathcal{S}(0,\varepsilon)^N)$
+    \tcp*{random start}
+  \For{$\tau \leftarrow 1$ \KwTo $T$}{
+    $\tilde{a}_j \leftarrow \mathrm{ST}\big(\pi_{\theta_j}(\hat{s}_j)\big)$
+      for all $j \in \mathcal{C}$ \tcp*{one shared graph}
+    $J \leftarrow \mathcal{J}\big(\tilde{a}_{1:N}, x_t, U\big)$\;
+    $g \leftarrow \nabla_{\hat{\mathbf{s}}} J$
+      \tcp*{one backward $\Rightarrow$ gradient for every agent}
+    $\hat{\mathbf{s}} \leftarrow \Pi_{\mathcal{S}}\big(\hat{\mathbf{s}} + \alpha \operatorname{sign}(g)\big)$\;
+  }
+  \If{$\mathcal{J}(\hat{\mathbf{s}}) > \mathcal{J}^{\text{best}}$}{
+    $\mathcal{J}^{\text{best}} \leftarrow \mathcal{J}(\hat{\mathbf{s}})$;\quad
+    $\hat{\mathbf{s}}^{\star} \leftarrow \hat{\mathbf{s}}$\;
+  }
+}
+\Return rows of $\hat{\mathbf{s}}^{\star}$\;
+\caption{Coordinated multi-agent PGD (one time step)}
+\label{alg:coordinated_pgd}
+\end{algorithm}
+
+The attack is solved once per time step for the whole compromised group; each agent
+subsequently receives its own block of the joint solution, so the $N$ agents act on
+a single coordinated decision rather than on $N$ independent ones.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{(B) Strategically-timed attacks under an \texorpdfstring{$L_0$}{L0} budget}
+\label{subsec:timed_attack}
+
+The attacks considered so far act at every time step. A more realistic adversary is
+constrained in \emph{how often} it can act, which converts the attack into a
+resource-allocation problem over the trajectory. We impose an $L_0$ budget: for an
+episode of $T_{\text{ep}}$ steps and a budget fraction $b \in (0,1]$,
+\begin{equation}
+  \frac{1}{T_{\text{ep}}} \sum_{t=1}^{T_{\text{ep}}} \mathbb{1}\big[\text{attack at } t\big]
+  \;\le\; b .
+  \label{eq:l0_budget}
+\end{equation}
+
+Spending this budget uniformly at random would waste it on steps at which the
+network has ample spare capacity. We instead spend it at moments of high leverage,
+identified by a \emph{critical-state score}. We use the maximum link utilisation
+across the topology,
+\begin{equation}
+  c_t = \max_{(u,v) \in E} \rho_t(u,v),
+  \label{eq:critical_score}
+\end{equation}
+
+\noindent where $\rho_t(u,v)$ is the utilisation of link $(u,v)$ at time $t$. This
+single quantity responds to both regimes of interest: congestion onset raises it
+directly, and the loss of a link raises it indirectly by concentrating traffic onto
+the surviving paths, so the score is elevated exactly when redundancy is thinnest.
+
+Because the distribution of $c_t$ is not known in advance and drifts within an
+episode, the trigger threshold is calibrated online. Let $W_t$ be a sliding window
+of the most recent scores. The adversary acts at time $t$ if
+\begin{equation}
+  c_t \;\ge\; \theta_t,
+  \qquad
+  \theta_t = Q_{1-b}\big( \{ c_{t'} \}_{t' \in W_t} \big),
+  \label{eq:timing_threshold}
+\end{equation}
+
+\noindent where $Q_{1-b}$ denotes the empirical $(1-b)$-quantile. The threshold is
+computed from the window \emph{before} $c_t$ is inserted, so that a step never
+influences its own decision, and the quantile construction makes the realised
+attack rate track $b$ without requiring the remainder of the episode to be known in
+advance. A short warm-up period, during which the adversary always acts, seeds the
+window before the quantile is meaningful. The procedure is summarised in
+Algorithm~\ref{alg:timing_gate}.
+
+\begin{algorithm}[H]
+\SetAlgoLined
+\DontPrintSemicolon
+\KwIn{budget $b$; window size $W$; warm-up length $H$; network state at time $t$}
+\KwOut{decision $\textit{fire} \in \{\text{true}, \text{false}\}$}
+$c_t \leftarrow \max_{(u,v) \in E} \rho_t(u,v)$ \tcp*{critical-state score}
+\eIf{$|\mathcal{H}| < H$}{
+  $\textit{fire} \leftarrow \text{true}$ \tcp*{warm-up: seed the window}
+}{
+  $\theta_t \leftarrow Q_{1-b}(\mathcal{H})$ \tcp*{computed before inserting $c_t$}
+  $\textit{fire} \leftarrow (c_t \ge \theta_t)$\;
+}
+insert $c_t$ into $\mathcal{H}$ (ring buffer of size $W$)\;
+\Return \textit{fire}\;
+\caption{Critical-state timing gate}
+\label{alg:timing_gate}
+\end{algorithm}
+
+The gate composes with either attack scope: it decides \emph{whether} to act at a
+given step, while Section~\ref{subsec:coordinated_attack} decides \emph{how} the
+perturbation is distributed across agents once the decision to act has been taken.
+On skipped steps the agents receive their unmodified observations.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Evaluation protocol}
+\label{subsec:eval_protocol}
+
+\subsubsection*{Paired arms}
+
+Each configuration is evaluated with three arms: a \emph{clean} arm with no
+perturbation, a \emph{random} control that draws a uniformly random direction from
+the same admissible set of Equation~\eqref{eq:admissible_set}, and the \emph{attack}
+under test. All three are run on identical episodes: the traffic sequence and any
+injected link failures are generated from a common seed, so episode $e$ of one arm
+and episode $e$ of another differ only in the perturbation applied. The random
+control draws from a dedicated random stream so that it consumes no entropy from
+the traffic generator, which would otherwise desynchronise the arms and invalidate
+the pairing.
+
+\subsubsection*{Adversarial-specific damage}
+
+Under link failures the raw degradation relative to the clean arm is dominated by
+the failures themselves rather than by the attack. The primary reported quantity is
+therefore the \emph{adversarial gap}, the paired per-episode difference between the
+random control and the attack,
+\begin{equation}
+  \Delta^{\text{adv}} = \frac{1}{n} \sum_{e=1}^{n}
+    \Big( \mathrm{PDR}^{\text{rand}}_{e} - \mathrm{PDR}^{\text{atk}}_{e} \Big),
+  \label{eq:adversarial_gap}
+\end{equation}
+
+\noindent reported with a paired $95\%$ confidence interval,
+$\Delta^{\text{adv}} \pm t_{0.975,\,n-1}\, s_d / \sqrt{n}$, where $s_d$ is the
+standard deviation of the per-episode differences. Differencing within episode pairs
+removes the episode-to-episode variance that otherwise dominates the comparison. The
+raw drop with respect to the clean arm is reported alongside it, but is not used as
+the measure of attack strength.
+
+\subsubsection*{Decisions versus outcomes}
+
+Two families of metric are recorded and reported separately. \emph{Decision} metrics
+count how much routing behaviour the attack changed, principally the action flip
+rate, the fraction of per-agent, per-destination $\arg\max$ path choices that differ
+between the clean and adversarial observations at the same time step,
+\begin{equation}
+  \mathrm{flip}
+  = \frac{1}{|\mathcal{C}|\, n_d\, T_{\text{ep}}}
+    \sum_{t}\sum_{i \in \mathcal{C}}\sum_{d}
+    \mathbb{1}\Big[
+      \arg\max_k \pi_{\theta_i}\big(\hat{s}_{i,t}\big)_{d,k}
+      \neq
+      \arg\max_k \pi_{\theta_i}\big(s_{i,t}^{\text{local}}\big)_{d,k}
+    \Big].
+  \label{eq:flip_rate}
+\end{equation}
+
+\emph{Outcome} metrics measure delivered traffic, principally end-to-end PDR. The
+distinction is essential in a topology with $K$-path redundancy, where a high flip
+rate accompanied by an unchanged PDR indicates that the network absorbed the
+redirected flows rather than that the attack succeeded. Reporting a flip rate as
+though it were a measure of damage would conflate the two.
+

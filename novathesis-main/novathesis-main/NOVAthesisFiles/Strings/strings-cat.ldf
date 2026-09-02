@@ -1,0 +1,208 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Strings/cat.ldf
+%% NOVA thesis configuration file
+%%
+%% Customization for language dependent strings
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\typeout{NT FILE Strings/cat.ldf}%
+
+\input{Strings/strings-declare.tex}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%  Catalan - strings
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\AtEndPreamble{
+\StartBabelCommands*{catalan}{date}
+  \SetStringLoop{month#1name}{%
+      Gener,Febrer,Març,Abril,Maig,Juny,%
+      Juliol,Agost,Setembre,Octubre,Novembre,%
+      Desembre}
+\EndBabelCommands
+}
+
+\bkmstring(frontmatter,cat)     := {Materials preliminars}
+\bkmstring(backmatter,cat)      := {Materials finals}
+\bkmstring(cover,cat)           := {Coberta}
+\bkmstring(incover,cat)         := {Segona de coberta}
+\bkmstring(frontpage,cat)       := {Portada}
+\bkmstring(infrontpage,cat)     := {Vers de la portada}
+\bkmstring(backcover,cat)       := {Contracoberta}
+\bkmstring(inbackcover,cat)     := {Tercera de coberta}
+\bkmstring(spine,cat)           := {Llombada}
+\bkmstring(copyright,cat)       := {Drets d’autor}
+\bkmstring(statement,cat)       := {Declaració}
+\bkmstring(dedicatory,cat)      := {Dedicatòria}
+\bkmstring(acknowledgements,cat):= {Agraïments}
+\bkmstring(quote,cat)           := {Citació}
+\bkmstring(abstract,cat)        := {Resum}
+\bkmstring(listof,cat)          := {Llista de…}
+\bkmstring(glossaries,cat)      := {Glossaris}
+\keywordsstring(cat)            := {Paraules clau}
+\notdefined(cat)                := {NO DEFINIT}
+\specializationstring(cat)      := {Especialització en}
+\departmentofstring(cat)        := {Departament de}
+\andstring(cat)                 := { i }
+\degreenameprefix(bsc,cat)      := {Grau en}
+\degreenameprefix(msc,cat)      := {Màster en}
+\degreenameprefix(phd,cat)      := {Doctorat en}
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Catalan (cat)
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\defaultnttitle(cat)            := {Un Títol de Tesi Molt Llarg i Impressionant\\amb un Salt de Línia Forçat}
+\defaultntsubtitle(cat)         := {Alguns Pensaments Sobre la Vida, l'Univers\\i Tota la Resta}
+\defaultntdepartment(cat)       := {Departament de\\nom del Departament}
+\defaultntdegreename(cat)       := {Nom del Programa d'Estudis}
+\defaultntspecialization(cat)   := {Nom de l'Especialització}
+\defaultntauthordegree(cat)     := {Màster/Grau en nom del Títol Anterior}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%  Adviser strings
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\adviserstring(a,1,m,cat)       := {Director}
+\adviserstring(a,1,f,cat)       := {Directora}
+\adviserstring(a,2,m,cat)       := {Directors}
+\adviserstring(a,2,f,cat)       := {Directores}
+
+\adviserstring(c,1,m,cat)       := {Coordinador del programa}
+\adviserstring(c,1,f,cat)       := {Coordinadora del programa}
+\adviserstring(c,2,m,cat)       := {Coordinadors del programa}
+\adviserstring(c,2,f,cat)       := {Coordinadores del programa}
+
+\adviserstring(ca,1,m,cat)      := {Codirector}
+\adviserstring(ca,1,f,cat)      := {Codirectora}
+\adviserstring(ca,2,m,cat)      := {Codirectors}
+\adviserstring(ca,2,f,cat)      := {Codirectores}
+
+\adviserstring(t,1,m,cat)       := {Tutor acadèmic}
+\adviserstring(t,1,f,cat)       := {Tutora acadèmica}
+\adviserstring(t,2,m,cat)       := {Tutors acadèmics}
+\adviserstring(t,2,f,cat)       := {Tutores acadèmiques}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Degree names
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\degreestring(bsc,m,cat)        := {Llicenciat}
+\degreestring(bsc,f,cat)        := {Llicenciada}
+
+\degreestring(msc,m,cat)        := {Titulat de màster}
+\degreestring(msc,f,cat)        := {Titulada de màster}
+\degreestring(mscplan,m,cat)    := {Titulat de màster}
+\degreestring(mscplan,f,cat)    := {Titulada de màster}
+
+\degreestring(phd,m,cat)        := {Doctor}
+\degreestring(phd,f,cat)        := {Doctora}
+\degreestring(phdplan,m,cat)    := {Doctorand}
+\degreestring(phdplan,f,cat)    := {Doctoranda}
+\degreestring(phdprop,m,cat)    := {Doctorand}
+\degreestring(phdprop,f,cat)    := {Doctoranda}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Document types
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\doctypestring(bsc,cat)         := {Treball de final de grau}
+\doctypestring(mscplan,cat)     := {Pla de treball de màster}
+\doctypestring(msc,cat)         := {Treball de final de màster}
+\doctypestring(phdplan,cat)     := {Pla de tesi doctoral}
+\doctypestring(phdprop,cat)     := {Proposta de tesi doctoral}
+\doctypestring(phd,cat)         := {Tesi doctoral}
+
+\dissertationplan(mscplan,cat)    := {Pla de la dissertació}
+\dissertationplan(phdplan,cat)    := {Pla de la tesi}
+\dissertationplan(phdprop,cat)    := {Proposta de tesi}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% SDG
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\sdgstring(cat)                 := {Objectius de Desenvolupament Sostenible (ODS)}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Committee
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\committeetitlestring(cat)      := {Tribunal avaluador}
+
+\committeestring(c,1,m,cat)     := {President del tribunal}
+\committeestring(c,1,f,cat)     := {Presidenta del tribunal}
+\committeestring(c,2,m,cat)     := {Presidents del tribunal}
+\committeestring(c,2,f,cat)     := {Presidentes del tribunal}
+
+\committeestring(r,1,m,cat)     := {Vocal}
+\committeestring(r,1,f,cat)     := {Vocal}
+\committeestring(r,2,m,cat)     := {Vocals}
+\committeestring(r,2,f,cat)     := {Vocals}
+
+\committeestring(a,1,m,cat)     := {Director}
+\committeestring(a,1,f,cat)     := {Directora}
+\committeestring(a,2,m,cat)     := {Directors}
+\committeestring(a,2,f,cat)     := {Directores}
+
+\committeestring(ca,1,m,cat)    := {Codirector}
+\committeestring(ca,1,f,cat)    := {Codirectora}
+\committeestring(ca,2,m,cat)    := {Codirectors}
+\committeestring(ca,2,f,cat)    := {Codirectores}
+
+\committeestring(m,1,m,cat)     := {Membre del tribunal}
+\committeestring(m,1,f,cat)     := {Membre del tribunal}
+\committeestring(m,2,m,cat)     := {Membres del tribunal}
+\committeestring(m,2,f,cat)     := {Membres del tribunal}
+
+\committeestring(g,1,m,cat)     := {Membre convidat}
+\committeestring(g,1,f,cat)     := {Membre convidada}
+\committeestring(g,2,m,cat)     := {Membres convidats}
+\committeestring(g,2,f,cat)     := {Membres convidades}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Dissertation strings
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\dissertationstring(bsc,cat)    = {Treball presentat per a l’obtenció del títol de %
+  \thedegreestring(\option{/novathesis/doctype},\expanded{\thedocauthor(gender)},\@LANG@COVER)\ en\\[1ex]%
+  \textbf{\themajorfield(\@LANG@COVER)}}
+
+\dissertationstring(mscplan,cat)= {Informe intermedi presentat per a l’obtenció del títol de %
+  \thedegreestring(\option{/novathesis/doctype},\expanded{\thedocauthor(gender)},\@LANG@COVER)\ en\\[1ex]%
+  \textbf{\themajorfield(\@LANG@COVER)}}
+
+\dissertationstring(msc,cat)    = {Treball de final de màster presentat per a l’obtenció del títol de %
+  \thedegreestring(\option{/novathesis/doctype},\expanded{\thedocauthor(gender)},\@LANG@COVER)\ en\\[1ex]%
+  \textbf{\themajorfield(\@LANG@COVER)}}
+
+\dissertationstring(phdplan,cat)= {Pla de tesi doctoral presentat per a l’obtenció del títol de %
+  \thedegreestring(\option{/novathesis/doctype},\expanded{\thedocauthor(gender)},\@LANG@COVER)\ en\\[1ex]%
+  \textbf{\themajorfield(\@LANG@COVER)}}
+
+\dissertationstring(phdprop,cat)= {Proposta de tesi doctoral presentada per a l’obtenció del títol de %
+  \thedegreestring(\option{/novathesis/doctype},\expanded{\thedocauthor(gender)},\@LANG@COVER)\ en\\[1ex]%
+  \textbf{\themajorfield(\@LANG@COVER)}}
+
+\dissertationstring(phd,cat)    = {Tesi doctoral presentada per a l’obtenció del títol de %
+  \thedegreestring(\option{/novathesis/doctype},\expanded{\thedocauthor(gender)},\@LANG@COVER)\ en\\[1ex]%
+  \textbf{\themajorfield(\@LANG@COVER)}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Copyright
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\copyrighttextstring(cat)       = {La \theschool(\@LANG@COPYRIGHT)\ i la \theuniversity(\@LANG@COPYRIGHT)\ disposen del dret perpetu i sense límits geogràfics d’arxivar i publicar aquesta tesi en format imprès o digital, o per qualsevol altre mitjà existent o futur, així com de difondre-la mitjançant repositoris científics i de permetre’n la còpia i distribució amb finalitats docents o de recerca, no comercials, sempre que es citi degudament l’autor i l’editor.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Acknowledgements
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\acknowledgmentsstring(cat)     = {Aquest document s’ha produït amb el sistema de composició \NTengineName~\cite{latex-project} i la plantilla \href{https://github.com/joaomlourenco/novathesis}{NOVAthesis} (v\novathesisversion)~\@ntcite{novathesis-manual}.}
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Babel definitions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\ntlangsetup*{cat/annex=Annex}
+\ntlangsetup*{cat/annexpl=Annexos}
+\ntlangsetup*{cat/appendixpl=Apèndixs}
