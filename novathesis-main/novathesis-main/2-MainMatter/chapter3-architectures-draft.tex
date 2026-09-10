@@ -109,6 +109,7 @@ comparison.
     CC-Duelling      & Central & Duelling & --- \\
     CC-Simple-GNN    & Central & Simple   & Yes \\
     CC-Duelling-GNN  & Central & Duelling & Yes \\
+    \hline
     LC-Simple        & Local   & Simple   & --- \\
     LC-Duelling      & Local   & Duelling & --- \\
     LC-Duelling-GNN  & Local   & Duelling & Yes \\
@@ -116,9 +117,14 @@ comparison.
   \end{tabular}
 \end{table}
 
-The matrix is not the full $2\times2\times2$ factorial: \texttt{LC-Simple-GNN} is
-omitted, as the local-critic value-head comparison is already covered by
-\texttt{LC-Simple}/\texttt{LC-Duelling} and the GNN comparison by
-\texttt{LC-Duelling}/\texttt{LC-Duelling-GNN}. Where a single variant is reported,
-\texttt{CC-Simple} serves as the reference configuration, being the canonical MADDPG
-formulation with no additional architectural machinery.
+The matrix omits the \texttt{LC-Simple-GNN} cell and is therefore not a complete
+factorial. Both main effects remain observable under a local critic --- the value
+head through \texttt{LC-Simple}/\texttt{LC-Duelling}, and graph encoding through
+\texttt{LC-Duelling}/\texttt{LC-Duelling-GNN} --- but their interaction under a
+local critic is not identifiable and is instead assumed additive. That assumption
+is testable rather than merely asserted: the four central-critic cells are
+complete, so the same interaction is identifiable there and can be checked for
+significance before the local-critic results are interpreted. Where a single
+variant is reported, \texttt{CC-Simple} serves as the reference configuration,
+being the canonical MADDPG formulation with no additional architectural machinery.
+% TODO: state the actual reason for the omission (e.g. compute budget) once confirmed.
