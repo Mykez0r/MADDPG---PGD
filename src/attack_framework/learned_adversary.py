@@ -164,8 +164,24 @@ class TimingGate:
     trigger threshold is the (1 - budget) quantile of a rolling window of scores,
     recalibrated online after every step, so the realised attack rate tracks
     `budget` over time without needing to see the rest of the episode in advance.
-    The first `min_history` steps always fire, to seed the window before the
-    quantile means anything.
+
+    Two details are what make the REALISED rate actually equal `budget`:
+
+      * The first `min_history` steps only OBSERVE — they seed the window without
+        attacking. The quantile is meaningless until the window is filled, so
+        firing through the warm-up would spend budget the gate cannot yet justify.
+      * Ties are rationed. The score is a max over utilisations that the engine
+        clips at 1.0, so whenever any link is saturated the score is exactly 1.0
+        and a large block of steps ties at the threshold. Firing on every tie
+        (`s >= thr`) made the gate ignore budgets below the saturated fraction: a
+        requested 0.10 realised ~0.21, and 0.10 and 0.15 became the same
+        experiment. Steps strictly above the threshold always fire; tied steps are
+        admitted only while the cumulative rate stays within `budget`.
+
+    The tie-break is deterministic (a running quota, not a coin flip): a random
+    one would add variance between arms that are supposed to differ only in
+    perturbation direction, and would need its own RNG stream to avoid disturbing
+    the seeded traffic sequence.
     """
 
     def __init__(self, budget: float, window: int = 1000, min_history: int = 100):
@@ -174,14 +190,12 @@ class TimingGate:
         self.history: deque = deque(maxlen=window)
         # Cumulative accounting over the gate's whole life. Never reset, unlike the
         # windowed counts _log_timing_summary flushes, so the REALISED attack rate
-        # can be reported at the end of a run. It can exceed `budget` for two
-        # reasons worth keeping apart: the warm-up always fires, and in the steady
-        # state every step scoring EXACTLY at the threshold fires too (`s >= thr`),
-        # which is common when saturated links pin the max utilisation at 1.0.
+        # can be reported at the end of a run.
         self.n_decisions = 0
         self.n_fired = 0
-        self.n_fired_warmup = 0
-        self.n_fired_at_threshold = 0
+        self.n_warmup = 0             # observed-only steps (never fire)
+        self.n_ties = 0               # steps scoring exactly at the threshold
+        self.n_ties_admitted = 0      # of which the quota let through
 
     # score bands for the "why" breakdown in the periodic summary — coarse
     # severity of the congestion the gate reacted to, not a precise cause
@@ -205,37 +219,46 @@ class TimingGate:
         BEFORE this step's score is appended, so a step never influences its own
         cutoff. Call once per timestep: the counters treat each call as one step."""
         s = self.score(network_engine)
-        warmup = len(self.history) < self.min_history
-        if warmup:
-            threshold = 0.0
-            fire = True
-        else:
-            threshold = float(np.quantile(self.history, 1.0 - self.budget))
-            fire = s >= threshold
-        self.history.append(s)
         self.n_decisions += 1
+        if len(self.history) < self.min_history:
+            self.history.append(s)                    # warm-up: observe, do not act
+            self.n_warmup += 1
+            return False, s, 0.0
+
+        threshold = float(np.quantile(self.history, 1.0 - self.budget))
+        if s > threshold:
+            fire = True
+        elif s == threshold:
+            # Ration the ties: admit one only while the cumulative rate stays within
+            # budget. Warm-up decisions sit in the denominator, so the allowance the
+            # warm-up did not spend is recovered here and the OVERALL rate lands on
+            # `budget` rather than on the tied fraction.
+            self.n_ties += 1
+            fire = (self.n_fired + 1) <= self.budget * self.n_decisions
+            if fire:
+                self.n_ties_admitted += 1
+        else:
+            fire = False
+
+        self.history.append(s)
         if fire:
             self.n_fired += 1
-            if warmup:
-                self.n_fired_warmup += 1
-            elif s == threshold:
-                self.n_fired_at_threshold += 1
         return fire, s, threshold
 
     def stats(self) -> Dict:
         """Realised behaviour of the gate so far, for the eval JSON."""
-        n, f = self.n_decisions, self.n_fired
-        steady_n = n - self.n_fired_warmup            # every warm-up decision fires
-        steady_f = f - self.n_fired_warmup
+        n, f, w = self.n_decisions, self.n_fired, self.n_warmup
         return {
             "gated": True,
             "budget": self.budget,
             "decisions": n,
             "attacked_steps": f,
             "realised_rate": (f / n) if n else None,
-            "warmup_fires": self.n_fired_warmup,
-            "realised_rate_excl_warmup": (steady_f / steady_n) if steady_n > 0 else None,
-            "fires_exactly_at_threshold": self.n_fired_at_threshold,
+            "warmup_decisions": w,          # observed only; these never attack
+            "realised_rate_excl_warmup": (f / (n - w)) if n > w else None,
+            "ties_seen": self.n_ties,
+            "fires_exactly_at_threshold": self.n_ties_admitted,
+            "ties_rejected": self.n_ties - self.n_ties_admitted,
         }
 
 
