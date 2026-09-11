@@ -172,6 +172,16 @@ class TimingGate:
         self.budget = float(budget)
         self.min_history = min_history
         self.history: deque = deque(maxlen=window)
+        # Cumulative accounting over the gate's whole life. Never reset, unlike the
+        # windowed counts _log_timing_summary flushes, so the REALISED attack rate
+        # can be reported at the end of a run. It can exceed `budget` for two
+        # reasons worth keeping apart: the warm-up always fires, and in the steady
+        # state every step scoring EXACTLY at the threshold fires too (`s >= thr`),
+        # which is common when saturated links pin the max utilisation at 1.0.
+        self.n_decisions = 0
+        self.n_fired = 0
+        self.n_fired_warmup = 0
+        self.n_fired_at_threshold = 0
 
     # score bands for the "why" breakdown in the periodic summary — coarse
     # severity of the congestion the gate reacted to, not a precise cause
@@ -193,16 +203,40 @@ class TimingGate:
     def should_attack(self, network_engine) -> Tuple[bool, float, float]:
         """Returns (fire, score, threshold). `threshold` is computed from history
         BEFORE this step's score is appended, so a step never influences its own
-        cutoff."""
+        cutoff. Call once per timestep: the counters treat each call as one step."""
         s = self.score(network_engine)
-        if len(self.history) < self.min_history:
+        warmup = len(self.history) < self.min_history
+        if warmup:
             threshold = 0.0
             fire = True
         else:
             threshold = float(np.quantile(self.history, 1.0 - self.budget))
             fire = s >= threshold
         self.history.append(s)
+        self.n_decisions += 1
+        if fire:
+            self.n_fired += 1
+            if warmup:
+                self.n_fired_warmup += 1
+            elif s == threshold:
+                self.n_fired_at_threshold += 1
         return fire, s, threshold
+
+    def stats(self) -> Dict:
+        """Realised behaviour of the gate so far, for the eval JSON."""
+        n, f = self.n_decisions, self.n_fired
+        steady_n = n - self.n_fired_warmup            # every warm-up decision fires
+        steady_f = f - self.n_fired_warmup
+        return {
+            "gated": True,
+            "budget": self.budget,
+            "decisions": n,
+            "attacked_steps": f,
+            "realised_rate": (f / n) if n else None,
+            "warmup_fires": self.n_fired_warmup,
+            "realised_rate_excl_warmup": (steady_f / steady_n) if steady_n > 0 else None,
+            "fires_exactly_at_threshold": self.n_fired_at_threshold,
+        }
 
 
 # ─────────────────────────── config ──────────────────────────────────────────

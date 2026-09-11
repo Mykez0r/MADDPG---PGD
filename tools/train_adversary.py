@@ -235,7 +235,28 @@ def _run_paired_eval(runner, maddpg, env, adv, mode, args, obs_dim, cfg,
                          "alpha": adv.alpha, "n_restarts": adv.n_restarts,
                          "random_start": adv.random_start}
 
+    # TIMING — what fraction of steps each arm ACTUALLY attacked. The requested
+    # budget is not enough: the gate's warm-up always fires and steps scoring
+    # exactly at the threshold fire too, so the realised rate runs above budget,
+    # and in a budget sweep the realised rate is the real x-axis. An arm without a
+    # gate attacks every step. The clean arm never invokes an adversary, so each
+    # gate's counters cover exactly its own attacked arm.
+    def _timing(arm):
+        gate = getattr(arm, "timing_gate", None)
+        return gate.stats() if gate is not None else {"gated": False,
+                                                       "realised_rate": 1.0}
+    result["timing"] = {"requested_budget": args.timing_budget,
+                        "attack": _timing(adv), "random": _timing(rnd)}
+
     w = result["warnings"]
+    ra = result["timing"]["attack"]["realised_rate"]
+    rr = result["timing"]["random"]["realised_rate"]
+    if ra is not None and rr is not None and abs(ra - rr) > 0.05:
+        w.append(
+            f"attack arm perturbed {ra:.1%} of steps but the random control perturbed "
+            f"{rr:.1%} — the arms differ in HOW OFTEN they attack, not only in "
+            "direction, so the adversarial gap is not a valid comparison. (Coordinated "
+            "PGD has no timing gate: do not combine it with --timing-budget.)")
     if gap_lo is not None and gap_lo <= 0.0 <= gap_hi:
         # "CI includes 0" at small n can mean "no effect" OR "underpowered"; report
         # the resolution so the two are not conflated.
