@@ -383,7 +383,8 @@ def main():
         runner, args.variant, args.victim_models)
     cfg = AdversaryConfig(epsilon=args.epsilon,
                           coordinate=args.coordinate,
-                          timing_budget=args.timing_budget)
+                          timing_budget=args.timing_budget,
+                          domain_clamp=args.domain_clamp)
 
     if args.eval_only and args.attack == "coordinated-pgd":
         # Optimisation-based attack: nothing to train, nothing to load. The joint
@@ -431,16 +432,35 @@ def main():
                     f"variant '{args.variant}'. A coordinated actor is sized for the "
                     "JOINT observation, so it can only be evaluated on the same "
                     "group — check that --variant/--config match the training run.")
-        adv = LearnedObservationAdversary(obs_dim, cfg,
-                                          group_hosts=group_hosts).load(args.adv_ckpt)
+        adv = LearnedObservationAdversary(
+            obs_dim, cfg, group_hosts=group_hosts,
+            domain_clamp=args.domain_clamp).load(args.adv_ckpt)
         mode = "coordinated" if cfg.coordinate else "independent"
+        # Evaluating in a different ball from the one the actor was trained in is
+        # a legitimate measurement (it is how the cost of the clamp is isolated),
+        # but it is a train/test mismatch and must not pass silently.
+        if adv.trained_domain_clamp != adv.domain_clamp:
+            print(f"[eval][WARN] checkpoint was TRAINED under "
+                  f"domain_clamp={adv.trained_domain_clamp} but is being evaluated "
+                  f"under {adv.domain_clamp}. The actor's direction was fitted "
+                  f"against the training projection, so this measures the effect "
+                  f"of the admissible set on a fixed policy, NOT the best attack "
+                  f"achievable in the evaluation ball.")
         print(f"[eval] mode={mode} group_size={adv.group_size} "
               f"epsilon={args.epsilon} timing_budget={args.timing_budget} "
+              f"domain_clamp={adv.domain_clamp} "
+              f"(trained under {adv.trained_domain_clamp}) "
               f"episodes={args.eval_episodes} seed={args.traffic_seed}")
         _run_paired_eval(runner, maddpg, env, adv, mode, args, obs_dim, cfg,
                          coordinate=cfg.coordinate, group_size=adv.group_size)
         return
 
+    # The seven checkpoints produced before the clamp was configurable were all
+    # trained under 'full'. The CLI default is 'fgsm_parity', so say which ball
+    # this run trains in rather than letting it change underfoot.
+    print(f"[train] variant={args.variant} epsilon={args.epsilon} "
+          f"coordinate={args.coordinate} timing_budget={args.timing_budget} "
+          f"domain_clamp={cfg.domain_clamp} episodes={args.episodes}")
     trainer = AdversaryTrainer(
         victim=maddpg, env=env, trainable_indices=trainable, obs_dim=obs_dim,
         cfg=cfg, build_full_actions=runner._build_full_actions,

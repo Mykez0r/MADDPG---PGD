@@ -278,6 +278,11 @@ class AdversaryConfig:
     # --- extension flags (see TODO(student) blocks) ---
     coordinate: bool = False         # (A) joint multi-agent perturbation
     timing_budget: Optional[float] = None  # (B) fraction of steps the attacker may act
+    # Admissible set for the perturbation. 'full' clamps every feature to [0,1];
+    # 'fgsm_parity' clamps only the first min(4, d) slots of each agent's block,
+    # reproducing the FGSM baseline. Defaults to 'full' so existing checkpoints,
+    # all of which were trained under the full clamp, keep their behaviour.
+    domain_clamp: str = "full"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -304,7 +309,8 @@ class LearnedObservationAdversary:
 
     def __init__(self, obs_dim: int, cfg: AdversaryConfig,
                  bandwidth_indices: Optional[Sequence[int]] = None,
-                 group_hosts: Optional[Sequence[str]] = None):
+                 group_hosts: Optional[Sequence[str]] = None,
+                 domain_clamp: Optional[str] = None):
         self.cfg = cfg
         self.epsilon = cfg.epsilon           # runner sets this per case; kept in sync
         self.attack_type = "learned"
@@ -326,9 +332,28 @@ class LearnedObservationAdversary:
         self.actor = AdversaryActor(self.actor_obs_dim, cfg.hidden).to(self.device)
         self.actor.eval()
 
+        # Which slots get re-projected into [0,1]. An explicit bandwidth_indices
+        # wins; otherwise the admissible set follows domain_clamp.
+        #   'full'        -> None, meaning clamp EVERY feature (a strict SUBSET of
+        #                    the FGSM baseline's set, so a strictly weaker attack)
+        #   'fgsm_parity' -> only the first min(4, d) slots of each agent's block,
+        #                    reproducing FGSMAttackFramework._apply_domain_constraints
+        # Measured on real observations, 'full' removes ~34% of the perturbation
+        # range and binds on ~80% of feature-steps, almost all of it because over
+        # half the observation vector sits at exactly 0 and the lower clamp
+        # deletes the downward half of the ball there (see tools/diagnose_clamp.py).
+        clamp = domain_clamp if domain_clamp is not None else getattr(
+            cfg, "domain_clamp", "full")
+        if clamp not in ("fgsm_parity", "full"):
+            raise ValueError("domain_clamp must be 'fgsm_parity' or 'full'")
+        self.domain_clamp = clamp
+
         local_bw = list(bandwidth_indices) if bandwidth_indices else None
+        if local_bw is None and clamp == "fgsm_parity":
+            local_bw = list(range(min(4, obs_dim)))
         if local_bw is not None and self.group_size > 1:
-            # tile the per-agent bandwidth slots across every block of the joint vector
+            # tile the per-agent clamped slots across every block of the joint
+            # vector — parity is defined per AGENT observation, not per joint one
             self.bandwidth_indices = np.concatenate([
                 np.asarray(local_bw, dtype=np.int64) + k * obs_dim
                 for k in range(self.group_size)
@@ -452,13 +477,20 @@ class LearnedObservationAdversary:
                     "epsilon": self.cfg.epsilon,
                     "coordinate": self.coordinate,
                     "group_size": self.group_size,
-                    "per_agent_obs_dim": self.per_agent_obs_dim}, path)
+                    "per_agent_obs_dim": self.per_agent_obs_dim,
+                    "domain_clamp": self.domain_clamp}, path)
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device)
         if ckpt.get("group_size", self.group_size) != self.group_size:
             raise ValueError(f"checkpoint group_size={ckpt.get('group_size')} does not "
                               f"match this adversary's group_size={self.group_size}")
+        # Which ball the actor was TRAINED in. Checkpoints written before the
+        # clamp was configurable carry no field and were all trained under 'full'.
+        # Evaluating in a different ball is legal — it is how the cost of the
+        # clamp is measured — but the caller should say so, since the actor's
+        # direction was fitted under the training projection.
+        self.trained_domain_clamp = ckpt.get("domain_clamp", "full")
         self.actor.load_state_dict(ckpt["actor"])
         self.actor.eval()
         return self
