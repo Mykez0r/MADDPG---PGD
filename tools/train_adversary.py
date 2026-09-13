@@ -38,7 +38,7 @@ sys.path.insert(0, "src/maddpg_clean")
 from standalone_experiment_runner import StandaloneExperimentRunner  # noqa: E402
 from learned_adversary import (  # noqa: E402
     AdversaryConfig, AdversaryTrainer, LearnedObservationAdversary,
-    RandomControlAdversary,
+    RandomControlAdversary, _log_gate_reasons,
 )
 from coordinated_pgd import CoordinatedPGDAdversary  # noqa: E402
 
@@ -175,6 +175,16 @@ def _run_paired_eval(runner, maddpg, env, adv, mode, args, obs_dim, cfg,
                                       attack=True, attack_type=adv.attack_type,
                                       epsilon=args.epsilon,
                                       measure_flips=True, **common)
+
+    # Trigger reasons. Write the attack arm's last windowed summary, which the
+    # episode-boundary flush never reaches, then one complete line per arm from
+    # the gate's cumulative counts. The same counts also land in the JSON below.
+    if hasattr(adv, "flush_timing_log"):
+        adv.flush_timing_log(final=True)
+    for arm_name, arm in (("random", rnd), ("attack", adv)):
+        gate = getattr(arm, "timing_gate", None)
+        if gate is not None:
+            _log_gate_reasons(f"[adv-timing][eval][{arm_name}] full run", gate)
 
     c_pdr = clean["mean_end_to_end_pdr"]
     r_pdr = random_arm["mean_end_to_end_pdr"]
