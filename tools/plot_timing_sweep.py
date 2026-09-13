@@ -51,9 +51,19 @@ SURFACE, INK, MUTED = "#fcfcfb", "#0b0b0b", "#898781"
 GRID, BASELINE = "#e1e0d9", "#c3c2b7"
 
 
-def load(results_root: str, epsilon: float, mode: str):
-    """Return {variant: {budget_or_None: row}} for one epsilon and eval mode."""
+def load(results_root: str, epsilon: float, mode: str, domain_clamp=None):
+    """Return ({variant: {budget_or_None: row}}, clamp) for one epsilon and mode.
+
+    Results under different admissible sets must never share a figure: the glob
+    below matches every eval file under the root, so a parity run written beside
+    the full-clamp runs would otherwise land on the same (variant, budget) cell
+    and silently replace it. With `domain_clamp` given, other clamps are skipped;
+    without it, mixed clamps are an error. Two files for one cell are an error
+    either way, rather than letting whichever sorts last win.
+    """
     out: dict = {}
+    source: dict = {}
+    clamps = set()
     pattern = os.path.join(results_root, "*", "**", f"learned_adv_eval_{mode}.json")
     files = glob.glob(pattern, recursive=True) + glob.glob(
         os.path.join(results_root, "*", f"learned_adv_eval_{mode}.json"))
@@ -63,6 +73,21 @@ def load(results_root: str, epsilon: float, mode: str):
         d = json.load(open(f, encoding="utf-8"))
         if abs(float(d.get("epsilon", -1)) - epsilon) > 1e-9:
             continue
+        clamp = d.get("domain_clamp", "full")
+        if domain_clamp is not None and clamp != domain_clamp:
+            continue
+        clamps.add(clamp)
+        key = (d["variant"], d.get("timing_budget"))
+        if key in source:
+            prev_file, prev_clamp = source[key]
+            if prev_clamp != clamp:
+                raise SystemExit(f"{key[0]} at budget {key[1]} has results under two domain "
+                                 f"clamps ({prev_clamp}, {clamp}):\n  {prev_file}\n  {f}\n"
+                                 "pass --domain-clamp to plot one of them")
+            raise SystemExit(f"two eval files for {key[0]} at budget {key[1]}:\n"
+                             f"  {prev_file}\n  {f}\n"
+                             "remove the stale one or narrow --results-root")
+        source[key] = (f, clamp)
         o, t = d.get("outcomes", {}), (d.get("timing") or {}).get("attack", {})
         dec = d.get("decisions") or {}
         lo, hi = (o.get("adversarial_gap_ci95") or [None, None])
@@ -73,7 +98,10 @@ def load(results_root: str, epsilon: float, mode: str):
             "rnd_flip": dec.get("random_action_flip_rate"),
             "episodes": d.get("episodes"),
         }
-    return out
+    if len(clamps) > 1:
+        raise SystemExit(f"eval files under {results_root} use different domain clamps "
+                         f"{sorted(clamps)}; pass --domain-clamp to plot one of them")
+    return out, (clamps.pop() if clamps else domain_clamp)
 
 
 def place_end_labels(ax, ends, fontsize=8, pad_px=2.0, iters=300, max_shift_px=160):
@@ -98,15 +126,26 @@ def place_end_labels(ax, ends, fontsize=8, pad_px=2.0, iters=300, max_shift_px=1
     settling. Line segments are not avoided, since a thin line crossing text
     stays legible and a marker under text does not.
 
+    A label that still has to move well away from its series gets a thin leader
+    line, in the series colour, back to the point where the series ends. In a
+    dense region the nearest clear position can be a long way off, and a bare
+    label displaced that far sits closer to a neighbouring series than to its own
+    and reads as naming the wrong line.
+
+    `ends` entries may carry a fifth element, the x of the series' true end, for
+    when the label is anchored somewhere else (the shared label columns of the
+    right panel); the leader line runs to that point.
+
     Must run after the figure's final layout, because it works in display space.
     """
     if not ends:
         return
     fig = ax.figure
     renderer = fig.canvas.get_renderer()
-    texts = [ax.text(x, y, variant, color=c, fontsize=fontsize, va="center",
-                     ha="left", clip_on=False) for x, y, variant, c in ends]
-    anchor = [ax.transData.transform((x, y)) for x, y, _, _ in ends]
+    texts = [ax.text(e[0], e[1], e[2], color=e[3], fontsize=fontsize, va="center",
+                     ha="left", clip_on=False) for e in ends]
+    anchor = [ax.transData.transform((e[0], e[1])) for e in ends]
+    series_end = [ax.transData.transform((e[4] if len(e) > 4 else e[0], e[1])) for e in ends]
     boxes = [t.get_window_extent(renderer) for t in texts]
     ys = [a[1] for a in anchor]
 
@@ -158,8 +197,13 @@ def place_end_labels(ax, ends, fontsize=8, pad_px=2.0, iters=300, max_shift_px=1
                 break
         placed.append((i, ys[i]))
     inv = ax.transData.inverted()
-    for t, a, y in zip(texts, anchor, ys):
+    for i, (t, a, y) in enumerate(zip(texts, anchor, ys)):
         t.set_position(inv.transform((a[0], y)))
+        if abs(y - a[1]) > 1.5 * boxes[i].height:
+            start = inv.transform((a[0] - 2.0, y))
+            stop = inv.transform(series_end[i])
+            ax.plot([start[0], stop[0]], [start[1], stop[1]], color=ends[i][3],
+                    linewidth=0.8, alpha=0.7, zorder=2, scalex=False, scaley=False)
 
 
 def style_axes(ax):
@@ -183,13 +227,17 @@ def main():
     ap.add_argument("--epsilon", type=float, default=0.30)
     ap.add_argument("--mode", default="independent",
                     help="which eval files to read: independent | coordinated")
+    ap.add_argument("--domain-clamp", choices=["full", "fgsm_parity"], default=None,
+                    help="plot only results under this admissible set; required "
+                         "when the root holds results under more than one")
     ap.add_argument("--out", default="timing_sweep_gap.png")
     args = ap.parse_args()
 
-    data = load(args.results_root, args.epsilon, args.mode)
+    data, clamp = load(args.results_root, args.epsilon, args.mode, args.domain_clamp)
     if not data:
         raise SystemExit(f"no {args.mode} eval JSONs with epsilon={args.epsilon} "
                          f"under {args.results_root}")
+    clamp_label = {"full": "full clamp", "fgsm_parity": "FGSM-parity clamp"}.get(clamp, clamp)
 
     budgets = sorted({b for v in data.values() for b in v if b is not None})
     columns = budgets + [None]                      # None = ungated, the 100% point
@@ -231,7 +279,7 @@ def main():
             ax.plot(i, r["gap"], marker="o", markersize=7, zorder=4, color=c,
                     markerfacecolor=(c if sig else SURFACE),
                     markeredgecolor=c, markeredgewidth=2)
-        ends.append((xs[-1] + 0.08, py[-1], variant, c))
+        ends.append((xs[-1] + 0.08, py[-1], variant, c, xs[-1]))
 
     ax.set_xticks(xs)
     ax.set_xticklabels(labels, fontsize=9, color=MUTED)
@@ -272,7 +320,7 @@ def main():
     for e in ends2 + [None]:
         if group and (e is None or e[0] > group[0][0] * 1.35):
             col = max(g[0] for g in group) * 1.12   # clears the end marker itself
-            label_ends2 += [(col, g[1], g[2], g[3]) for g in group]
+            label_ends2 += [(col, g[1], g[2], g[3], g[0]) for g in group]
             group = []
         if e is not None:
             group.append(e)
@@ -297,8 +345,8 @@ def main():
                   fontsize=11, color=INK, loc="left", pad=12)
 
     n = next(iter(next(iter(data.values())).values()))["episodes"]
-    fig.suptitle(f"Learned adversary vs victim architecture, {args.mode} scope  "
-                 f"(ε = {args.epsilon:g}, n = {n} paired episodes)",
+    fig.suptitle(f"Learned adversary vs victim architecture, {args.mode} scope, "
+                 f"{clamp_label}  (ε = {args.epsilon:g}, n = {n} paired episodes)",
                  fontsize=12, color=INK, x=0.035, ha="left", y=1.02)
     handles, lbls = ax.get_legend_handles_labels()
     fig.legend(handles, lbls, frameon=False, fontsize=8, ncol=7,
@@ -318,8 +366,8 @@ def main():
     csv_path = os.path.splitext(args.out)[0] + ".csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["variant", "timing_budget", "realised_rate", "gap_pp",
-                    "ci95_lo", "ci95_hi", "significant",
+        w.writerow(["variant", "scope", "domain_clamp", "timing_budget", "realised_rate",
+                    "gap_pp", "ci95_lo", "ci95_hi", "significant",
                     "attack_flip_pct", "random_flip_pct"])
         for variant in VARIANT_ORDER:
             for b in columns:
@@ -327,7 +375,7 @@ def main():
                 if not r:
                     continue
                 sig = r["lo"] is not None and not (r["lo"] <= 0 <= r["hi"])
-                w.writerow([variant, "none" if b is None else b,
+                w.writerow([variant, args.mode, clamp, "none" if b is None else b,
                             f"{r['realised']:.3f}" if r["realised"] else "",
                             f"{r['gap']:+.3f}", f"{r['lo']:+.3f}" if r["lo"] is not None else "",
                             f"{r['hi']:+.3f}" if r["hi"] is not None else "", int(sig),
