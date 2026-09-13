@@ -76,30 +76,90 @@ def load(results_root: str, epsilon: float, mode: str):
     return out
 
 
-def place_end_labels(ax, ends, pad_frac=0.018, max_shift_frac=None):
-    """Direct end-labels, nudged just enough to clear one line of text.
+def place_end_labels(ax, ends, fontsize=8, pad_px=2.0, iters=300, max_shift_px=160):
+    """Direct end-labels, separated by their real rendered size.
 
-    `ends` is [[y, x, variant, colour], ...]. The nudge is ~one label height,
-    NOT a big fraction of the span: an over-large gap drags a label away from
-    the line it names, which misreads worse than no label. When
-    `max_shift_frac` is set, a label that still cannot sit near its own series
-    is dropped - the legend and the CSV table view carry those.
+    `ends` is [(x, y, variant, colour), ...] in data coordinates. Each label is
+    drawn at its series' end, measured in pixels, and any two labels whose boxes
+    overlap are pushed apart vertically until they clear. Only labels that also
+    overlap horizontally interact, so two labels at a similar height but far
+    apart in x never disturb each other.
+
+    The push is symmetric, so a cluster spreads about its own data rather than
+    stacking upwards away from the lines it names. An earlier version used a fixed
+    fraction of the y-span as the gap; that clears labels only when the span
+    happens to be small, and collided whenever two series ended at the same value.
+
+    Data markers are fixed obstacles as well. After the labels are spread apart,
+    each one moves to the nearest vertical position, scanning outward a pixel at
+    a time, that is clear of every marker and every label already placed. This
+    is a search rather than a push: pushing a label off one marker in a dense
+    band of markers lands it on the next, and the push oscillated without
+    settling. Line segments are not avoided, since a thin line crossing text
+    stays legible and a marker under text does not.
+
+    Must run after the figure's final layout, because it works in display space.
     """
-    ends = sorted(ends)
-    span = (ax.get_ylim()[1] - ax.get_ylim()[0]) or 1.0
-    min_gap = pad_frac * span
-    max_shift = None if max_shift_frac is None else max_shift_frac * span
-    prev = None
-    for e in ends:
-        e.append(e[0])                                   # remember the true y
-        if prev is not None and e[0] - prev < min_gap:
-            e[0] = prev + min_gap
-        prev = e[0]
-    for y, x, variant, c, true_y in ends:
-        if max_shift is not None and abs(y - true_y) > max_shift:
+    if not ends:
+        return
+    fig = ax.figure
+    renderer = fig.canvas.get_renderer()
+    texts = [ax.text(x, y, variant, color=c, fontsize=fontsize, va="center",
+                     ha="left", clip_on=False) for x, y, variant, c in ends]
+    anchor = [ax.transData.transform((x, y)) for x, y, _, _ in ends]
+    boxes = [t.get_window_extent(renderer) for t in texts]
+    ys = [a[1] for a in anchor]
+
+    # Every drawn marker, as a box in pixels. Lines with no marker (the zero
+    # baseline, the error-bar spines) are skipped.
+    obstacles = []
+    for line in ax.lines:
+        if line.get_marker() in (None, "None", "", " "):
             continue
-        ax.annotate(variant, xy=(x, y), color=c, fontsize=8,
-                    va="center", ha="left", annotation_clip=False)
+        r = line.get_markersize() * fig.dpi / 72 / 2 + 1
+        for px, py in ax.transData.transform(line.get_xydata()):
+            obstacles.append((px - r, py - r, px + r, py + r))
+
+    for _ in range(iters):
+        moved = False
+        for i in range(len(texts)):
+            for j in range(i + 1, len(texts)):
+                li, lj = anchor[i][0], anchor[j][0]
+                if li + boxes[i].width <= lj or lj + boxes[j].width <= li:
+                    continue                                  # no horizontal overlap
+                need = (boxes[i].height + boxes[j].height) / 2 + pad_px
+                dy = ys[j] - ys[i]
+                if abs(dy) < need:
+                    push = (need - abs(dy)) / 2
+                    sign = 1.0 if dy >= 0 else -1.0
+                    ys[i] -= sign * push
+                    ys[j] += sign * push
+                    moved = True
+        if not moved:
+            break
+
+    def blocked(i, y, placed):
+        x0, x1 = anchor[i][0], anchor[i][0] + boxes[i].width
+        half = boxes[i].height / 2 + pad_px
+        if any(o[0] < x1 and o[2] > x0 and o[1] < y + half and o[3] > y - half
+               for o in obstacles):
+            return True
+        return any(anchor[j][0] < x1 and anchor[j][0] + boxes[j].width > x0
+                   and abs(yj - y) < (boxes[i].height + boxes[j].height) / 2 + pad_px
+                   for j, yj in placed)
+
+    placed = []
+    for i in range(len(texts)):
+        for step in range(max_shift_px + 1):
+            candidates = (ys[i],) if step == 0 else (ys[i] + step, ys[i] - step)
+            free = next((y for y in candidates if not blocked(i, y, placed)), None)
+            if free is not None:
+                ys[i] = free
+                break
+        placed.append((i, ys[i]))
+    inv = ax.transData.inverted()
+    for t, a, y in zip(texts, anchor, ys):
+        t.set_position(inv.transform((a[0], y)))
 
 
 def style_axes(ax):
@@ -171,9 +231,7 @@ def main():
             ax.plot(i, r["gap"], marker="o", markersize=7, zorder=4, color=c,
                     markerfacecolor=(c if sig else SURFACE),
                     markeredgecolor=c, markeredgewidth=2)
-        ends.append([py[-1], xs[-1] + 0.08, variant, c])
-
-    place_end_labels(ax, ends, pad_frac=0.018, max_shift_frac=0.05)
+        ends.append((xs[-1] + 0.08, py[-1], variant, c))
 
     ax.set_xticks(xs)
     ax.set_xticklabels(labels, fontsize=9, color=MUTED)
@@ -202,8 +260,22 @@ def main():
         fx, fy = [p[0] for p in pts], [p[1] for p in pts]
         ax2.plot(fx, fy, color=c, linewidth=2.0, alpha=0.95, zorder=3,
                  marker="o", markersize=6, markerfacecolor=c, markeredgecolor=c)
-        ends2.append([fy[-1], fx[-1] * 1.09, variant, c])
+        ends2.append((fx[-1], fy[-1], variant, c))
         flips_all.extend(fx)
+
+    # Series ending at nearly the same flip rate share one label column, just
+    # right of the furthest of them. Anchoring each label at its own end let a
+    # label land on a neighbouring series' end marker whenever two variants
+    # finished within a few percent of each other.
+    ends2.sort(key=lambda e: e[0])
+    label_ends2, group = [], []
+    for e in ends2 + [None]:
+        if group and (e is None or e[0] > group[0][0] * 1.35):
+            col = max(g[0] for g in group) * 1.12   # clears the end marker itself
+            label_ends2 += [(col, g[1], g[2], g[3]) for g in group]
+            group = []
+        if e is not None:
+            group.append(e)
 
     # Flip rates span ~3 decades (0.018% to 17%), so a linear x crushes four of
     # the seven variants against the origin. Log x is the honest fix: it is a
@@ -211,10 +283,6 @@ def main():
     # spread at matched x, which any monotone x-scale preserves.
     ax2.set_xscale("log")
     ax2.xaxis.grid(True, color=GRID, linewidth=0.8)
-
-    # No max_shift here: this panel has no error bars to fall back on, so every
-    # variant must keep its label even when the flat ones pile up around zero.
-    place_end_labels(ax2, ends2, pad_frac=0.045)
 
     lo_f, hi_f = min(flips_all), max(flips_all)
     ax2.set_xlim(lo_f * 0.55, hi_f * 3.4)
@@ -229,7 +297,7 @@ def main():
                   fontsize=11, color=INK, loc="left", pad=12)
 
     n = next(iter(next(iter(data.values())).values()))["episodes"]
-    fig.suptitle(f"Learned adversary vs victim architecture  "
+    fig.suptitle(f"Learned adversary vs victim architecture, {args.mode} scope  "
                  f"(ε = {args.epsilon:g}, n = {n} paired episodes)",
                  fontsize=12, color=INK, x=0.035, ha="left", y=1.02)
     handles, lbls = ax.get_legend_handles_labels()
@@ -237,6 +305,12 @@ def main():
                loc="lower center", bbox_to_anchor=(0.5, -0.06), labelcolor=INK)
 
     fig.tight_layout(w_pad=4.0)
+
+    # Labels last: collision handling measures text in pixels, so it needs the
+    # final axes geometry that tight_layout has just fixed.
+    fig.canvas.draw()
+    place_end_labels(ax, ends)
+    place_end_labels(ax2, label_ends2)
     fig.savefig(args.out, bbox_inches="tight", facecolor=SURFACE)
     print("wrote", args.out)
 
