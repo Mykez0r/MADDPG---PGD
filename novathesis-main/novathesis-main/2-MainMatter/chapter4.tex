@@ -3,9 +3,697 @@
 %% chapter4.tex
 %% NOVA thesis document file
 %%
-%% Chapter with lots of dummy text
+%% Results
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \typeout{NT FILE chapter4.tex}%
 
 \chapter{Statistics and Results}
+\label{chap:results}
+
+This chapter reports what the learned observation-space adversary of
+Section~\ref{subsec:learned_adversary} actually achieves against the victim family of
+Section~\ref{sec:victim_architectures}. The question inherited from the earlier
+stages of this research line is narrow and comparative. The FGSM study found that
+perturbing every agent at every step altered a substantial fraction of routing
+decisions while extracting almost none of the available damage. The present work asks
+whether that robustness survives a stronger attacker with two mechanisms. Inspired by
+PGD, it divides its effort across time: rather than spending a full-strength
+perturbation at every step, it acts on only a fraction of the steps, choosing
+\emph{when} to spend a limited budget. Inspired by SAJA, it coordinates the perturbation
+across agents, choosing the compromised agents' perturbations together rather than one
+agent at a time.
+
+Both mechanisms are evaluated. The independent scope perturbs each agent separately, so
+it isolates the first mechanism, dividing the attack across time. The coordinated scope
+adds coordination, and comparing the two scopes on identical episodes isolates what
+coordination contributes. Results are reported under two domain clamps, which decide
+which observation features are re-projected onto $[0,1]$ after the perturbation.
+Section~\ref{sec:results_parity_clamp} reports the independent scope under the
+\emph{FGSM-parity} clamp, which reproduces the admissible set of the FGSM study, so
+that the attack is measured on the same terms as the baseline.
+Section~\ref{sec:results_full_clamp} reports both scopes under the stricter
+\emph{full} clamp, and Section~\ref{sec:results_clamp_effect} compares the two clamps
+on paired episodes.
+
+The results are organised around three measurements. The first is how the attack's
+effect varies with the timing budget, that is, with the fraction of timesteps the
+adversary is permitted to act on; this tests the central claim of
+Section~\ref{subsec:timed_attack}, that concentrating a fixed budget on
+high-utilisation moments buys more damage than spreading it uniformly. The second is
+the relationship between decisions changed and packets lost, which tests whether the
+flip rate reported by the earlier study is a meaningful proxy for damage at all. The
+third is the effect of coordination, measured as the paired difference between the
+coordinated and independent attacks.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Reported Statistic and Experimental Protocol}
+\label{sec:results_protocol}
+
+Every figure and table in this chapter reports the \emph{adversarial gap} of
+Equation~\eqref{eq:adversarial_gap}: the paired per-episode difference in end-to-end
+packet delivery ratio (PDR) between the random control arm and the attack arm,
+expressed in percentage points. The raw drop from the clean baseline is deliberately
+not used as the headline number. A perturbation of magnitude $\varepsilon$ applied to
+an observation will disturb the controller whether or not its direction was chosen
+adversarially, so the clean-to-attack difference conflates the damage attributable to
+the attacker's optimisation with the damage any same-sized noise would have caused.
+The adversarial gap isolates the former, and it is the only quantity that speaks to
+whether learning the perturbation direction was worth anything.
+
+Three arms are run for each configuration: a clean arm with no perturbation, a
+random control drawing uniformly from the same $\varepsilon$-ball under the same
+admissible set and the same timing gate, and the attack arm. The three arms are
+\emph{paired}: each of the 30 evaluation episodes uses an identical traffic
+sequence and identical link-failure seed across all arms, so the per-episode
+differences are matched and the reported 95\% confidence intervals are computed on
+those paired differences. Without pairing, the between-episode variance in offered
+traffic would dominate the effect being measured and the intervals would be
+meaningless.
+
+The victim is frozen throughout, as established in
+Section~\ref{subsec:threat_model_pgd}: neither actor nor critic parameters receive
+gradient updates during any attack or evaluation, so every number below describes an
+attack on a fixed controller rather than a training-time interaction. Evaluation
+uses $\varepsilon = 0.30$ under the $L_\infty$ norm, 30 paired episodes of 256
+timesteps at an offered load factor of 2.0, with no injected link failures and a
+fixed traffic seed. Three sets of adversaries, one per victim variant in each set,
+were trained as described in Section~\ref{subsec:learned_adversary}: an independent
+and a coordinated set under the full domain clamp, and an independent set under the
+FGSM-parity clamp. An adversary is always evaluated under the clamp it was trained
+with. Each was trained for 300 episodes with the timing gate set to $b = 0.25$, the
+loosest budget in the sweep, so that the tighter evaluation budgets act on a subset of
+the state distribution seen during training.
+
+A result is treated as evidence of a real effect only when its 95\% confidence
+interval excludes zero; such cells are marked in the tables and drawn with filled
+markers in the figures. A confidence interval spanning zero is reported as a null,
+not as proof of robustness, since each run has a finite resolution floor that
+depends on the variant's paired variance. For the tightest variants this floor is
+approximately $0.1$~pp, meaning a true effect smaller than that would be invisible
+at $n = 30$ and should not be claimed either way.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Results Under the FGSM-Parity Domain Clamp}
+\label{sec:results_parity_clamp}
+
+Every result in this section was obtained under the \emph{FGSM-parity domain clamp}:
+after the $\ell_\infty$ projection, only the normalised bandwidth features of each
+agent's observation are re-projected onto $[0,1]$, and every other feature may move
+anywhere within the $\varepsilon$-ball. This is the domain constraint $\mathcal{D}$ of
+Equation~\eqref{eq:admissible_set}, the one used by the FGSM study of
+Section~\ref{subsec:base_fgsm}, so the attack and its random control draw from exactly
+the admissible set within which the baseline perturbed. A separate set of seven
+independent-scope adversaries was trained for this clamp, which is recorded in each of
+the 35 evaluation records. The clean arm depends on neither the adversary nor the
+clamp, and its per-episode delivery series is bit-identical to that of the full-clamp
+evaluation in all 35 configurations. The coordinated scope has not been evaluated under
+this clamp.
+
+This clamp is the looser of the two: every perturbation admissible under the full clamp
+of Section~\ref{sec:results_full_clamp} is also admissible here. That does not make the
+damage measured here an upper bound on the damage measured there. Each clamp has its
+own trained adversary, and a learned adversary is not guaranteed to exploit a larger
+set at least as well as a smaller one; Section~\ref{sec:results_clamp_effect} shows
+that on several variants it does not.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Sensitivity to the timing budget}
+\label{subsec:results_parity_timing}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{timing_sweep_gap_independent_parity.png}
+  \caption{Independent scope, FGSM-parity domain clamp. Adversarial gap for all seven
+           victim variants at $\varepsilon = 0.30$, $n = 30$ paired episodes.
+           \textbf{Left:} gap against the requested timing budget, with the mean
+           realised attack rate printed beneath each tick and the ungated run
+           included as the 100\% reference; filled markers denote a 95\% confidence
+           interval excluding zero, hollow markers a null. \textbf{Right:} the same
+           gaps plotted against the fraction of routing decisions the attack
+           actually changed, on a logarithmic axis, with each variant drawn as one
+           path walking from $b = 0.10$ through to the ungated run. A thin line joins
+           a label to its series where the label had to be moved clear of the data.}
+  \label{fig:sweep_parity}
+\end{figure}
+
+The timing gate spends the budget it is given: the four requested budgets realise,
+averaged over the seven variants, as $10.0\%$, $15.0\%$, $19.9\%$ and $24.9\%$ of
+steps. Figure~\ref{fig:sweep_parity} and Table~\ref{tab:gap_sweep_parity} show a
+different architectural pattern from the one found under the full clamp. A single
+variant is clearly vulnerable. \texttt{LC-Simple} is attacked significantly at every
+budget, its gap rising from $+0.40$~pp at $b = 0.10$ to $+1.45$~pp at $b = 0.25$ and
+$+5.90$~pp ungated, the largest gap measured in this study. Ungated, its delivery ratio
+falls to $71.8\%$, against $77.3\%$ clean and $77.7\%$ under the random control.
+\texttt{CC-Duelling-GNN} separates from zero only ungated, at $+0.78$~pp, and
+\texttt{CC-Duelling} does not separate at all, reaching $+0.59$~pp ungated with an
+interval that spans zero. \texttt{CC-Simple}, \texttt{CC-Simple-GNN} and
+\texttt{LC-Duelling-GNN} stay within $0.2$~pp of zero at every budget.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Independent scope, FGSM-parity domain clamp. Adversarial gap in percentage
+           points by victim variant and requested timing budget, at
+           $\varepsilon = 0.30$ and $n = 30$ paired episodes. Bold entries have a 95\%
+           confidence interval excluding zero. Positive values indicate the attack
+           cost the victim more than the random control of the same magnitude;
+           negative values indicate the reverse.}
+  \label{tab:gap_sweep_parity}
+  \begin{tabular}{lrrrrr}
+    \hline
+    \textbf{Variant} & \textbf{0.10} & \textbf{0.15} & \textbf{0.20} & \textbf{0.25} & \textbf{ungated} \\
+    \hline
+    CC-Simple        & $-0.01$ & $+0.02$ & $-0.01$ & $+0.05$ & $-0.02$ \\
+    CC-Duelling      & $-0.04$ & $+0.10$ & $+0.18$ & $+0.09$ & $+0.59$ \\
+    CC-Simple-GNN    & $+0.00$ & $+0.00$ & $-0.01$ & $+0.00$ & $+0.04$ \\
+    CC-Duelling-GNN  & $-0.17$ & $-0.24$ & $+0.11$ & $-0.15$ & $\mathbf{+0.78}$ \\
+    LC-Simple        & $\mathbf{+0.40}$ & $\mathbf{+1.01}$ & $\mathbf{+1.27}$ & $\mathbf{+1.45}$ & $\mathbf{+5.90}$ \\
+    LC-Duelling      & $\mathbf{-0.48}$ & $\mathbf{-0.71}$ & $\mathbf{-1.04}$ & $\mathbf{-0.83}$ & $\mathbf{-1.31}$ \\
+    LC-Duelling-GNN  & $+0.00$ & $+0.01$ & $+0.01$ & $+0.00$ & $-0.18$ \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\texttt{LC-Duelling} is an exception in the other direction. Its gap is significantly
+\emph{negative} at every budget, from $-0.48$~pp at $b = 0.10$ to $-1.31$~pp ungated.
+Ungated, the victim delivers $78.6\%$ of packets under attack, against $77.3\%$ under
+the random control and $76.9\%$ with no perturbation at all, so the adversary trained
+against this victim steers it to deliver more than it would unperturbed. This is not
+evidence of robustness. It shows that the direction the adversary learned is
+systematically wrong for this victim. The adversary maximises the per-step drop
+fraction of Equation~\eqref{eq:la_reward} rather than the end-to-end delivery ratio on
+which it is scored, and either the two objectives come apart on this victim or training
+converged to a poor direction; these runs do not separate the two.
+
+Under this clamp, concentrating the budget on critical states does not buy more damage
+per attacked step. Normalising \texttt{LC-Simple}'s gap by the realised attack rate
+gives $4.0$~pp per unit rate at $b = 0.10$, $6.7$ at $b = 0.15$, $6.4$ at $b = 0.20$
+and $5.9$ at $b = 0.25$, against $5.9$ ungated. Beyond the tightest budget its damage
+grows in proportion to the number of steps attacked, and the tightest budget is the
+least efficient rather than the most. No other variant has a significant positive gap
+at any gated budget, so none shows an efficiency gain either. The efficiency found under
+the full clamp in Section~\ref{subsec:results_ind_timing} is therefore a property of
+the adversaries trained there, not of dividing the attack across time as such. As under
+the full clamp, the adversaries were trained with the gate at $b = 0.25$, so the
+ungated column asks them to act on states they did not encounter during training. For
+\texttt{LC-Simple} this costs nothing: its ungated gap is four times its gap at
+$b = 0.25$, for four times the number of steps attacked.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Decision flips versus delivered damage}
+\label{subsec:results_parity_flips}
+
+The right panel of Figure~\ref{fig:sweep_parity} and
+Table~\ref{tab:ungated_detail_parity} show the flip rate failing as a measure of damage
+more starkly than under the full clamp. Ungated, \texttt{LC-Simple},
+\texttt{CC-Duelling-GNN} and \texttt{LC-Duelling} change $15.3\%$, $13.3\%$ and
+$13.2\%$ of routing decisions, within about two percentage points of one another, yet
+their gaps are $+5.90$, $+0.78$ and $-1.31$~pp, a spread of more than seven percentage
+points. The same holds at a gated budget: at $b = 0.25$, \texttt{LC-Simple} and
+\texttt{CC-Duelling-GNN} both change $2.92\%$ of decisions, with gaps of $+1.45$ and
+$-0.15$~pp. The random control again changes many decisions on its own, between $9.6\%$
+and $10.7\%$ on the four variants with the highest flip rates.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Independent scope, FGSM-parity domain clamp. Ungated results at
+           $\varepsilon = 0.30$, $n = 30$ paired episodes: adversarial gap with its
+           95\% confidence interval, and the fraction of routing decisions changed by
+           the attack and by the random control.}
+  \label{tab:ungated_detail_parity}
+  \begin{tabular}{lrcrr}
+    \hline
+    \textbf{Variant} & \textbf{Gap (pp)} & \textbf{95\% CI} & \textbf{Attack flips} & \textbf{Random flips} \\
+    \hline
+    CC-Simple        & $-0.02$ & $[-0.17, +0.14]$ & $8.68\%$  & $5.23\%$  \\
+    CC-Duelling      & $+0.59$ & $[-0.08, +1.26]$ & $10.77\%$ & $9.62\%$  \\
+    CC-Simple-GNN    & $+0.04$ & $[-0.02, +0.10]$ & $1.02\%$  & $0.27\%$  \\
+    CC-Duelling-GNN  & $+0.78$ & $[+0.20, +1.36]$ & $13.34\%$ & $10.63\%$ \\
+    LC-Simple        & $+5.90$ & $[+4.87, +6.93]$ & $15.32\%$ & $10.74\%$ \\
+    LC-Duelling      & $-1.31$ & $[-1.94, -0.68]$ & $13.15\%$ & $9.87\%$  \\
+    LC-Duelling-GNN  & $-0.18$ & $[-0.42, +0.06]$ & $3.11\%$  & $1.11\%$  \\
+    \hline
+  \end{tabular}
+\end{table}
+
+The two GNN variants that resist the attack show the same two behaviours as under the
+full clamp (Section~\ref{subsec:results_ind_flips}). \texttt{CC-Simple-GNN} changes
+only $1.02\%$ of decisions ungated, and at most $0.13\%$ at any gated budget, so the
+perturbation rarely moves the selected path at all. \texttt{LC-Duelling-GNN} changes
+$3.11\%$ ungated and still returns a gap of $-0.18$~pp: its routing does change, and
+the network absorbs the change.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{What triggered the attacks}
+\label{subsec:results_parity_triggers}
+
+These are the first runs in which the timing gate recorded why it acted. For every
+attacked step it logs which case of Equation~\eqref{eq:timing_rule} admitted the step,
+a score strictly above the threshold or a tie at the threshold admitted by rationing,
+together with the congestion band the score fell in: saturated ($c_t \ge 1.00$), near
+saturation ($0.90 \le c_t < 1.00$), high congestion ($0.75 \le c_t < 0.90$) or
+moderate ($c_t < 0.75$). Figure~\ref{fig:trigger_reasons_parity} shows each trigger's
+share of the attack arm's attacked steps. The random control passes through the same
+gate, and its composition is nearly identical: at $b = 0.15$, for instance, its tie
+share differs from the attack arm's by at most three percentage points for every
+variant.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{trigger_reasons_independent_parity.png}
+  \caption{Independent scope, FGSM-parity domain clamp: why the timing gate fired in
+           the attack arm ($\varepsilon = 0.30$, $n = 30$ episodes). One panel per
+           trigger that occurred in at least one run, combining the case of
+           Equation~\eqref{eq:timing_rule} that admitted the step with the
+           congestion band of its score. Rows are victim variants and columns the
+           requested timing budget. Each cell gives the trigger's share of that run's
+           attacked steps, with the count beneath it, so the three panels of one cell
+           sum to 100\%. Ungated runs have no gate and are omitted.}
+  \label{fig:trigger_reasons_parity}
+\end{figure}
+
+Three findings stand out. First, no attacked step in any run, in either arm, scored
+$1.00$ or more, or less than $0.75$. The point mass in the score distribution that the
+rationing rule of Section~\ref{subsec:timed_attack} exists to handle lies at $0.90$
+rather than at full saturation. At $b = 0.10$ and $b = 0.15$ the mean threshold at
+which the gate fired is $0.90$ for every variant, and the tied steps are the steps
+sitting on that point mass. Its stored value falls a floating-point rounding error below
+$0.90$, which is why ties are recorded in the high-congestion band although they sit at
+that band's upper edge.
+
+Second, the most congested states always fire. Steps scoring between $0.90$ and $1.00$
+are admitted at every budget, in a nearly constant number per variant: $321$ for
+\texttt{CC-Simple} and between $505$ and $599$ for the others. Their share of the
+attacks therefore falls from $42$--$77\%$ at $b = 0.10$ to $17$--$32\%$ at $b = 0.25$.
+
+Third, the route by which the rest of the budget is spent changes with the budget. At
+$b = 0.10$ and $b = 0.15$ the threshold sits on the point mass, and ties admitted by
+rationing account for $23$--$58\%$ and $45$--$66\%$ of the attacks respectively. On the
+observed score sequences, admitting every tie would have raised the attack rate to
+between $17\%$ and $21\%$ at both budgets, collapsing the two tightest budgets into
+nearly the same experiment; rationing is what keeps them apart. From $b = 0.20$ the
+threshold begins to fall below the point mass, and by $b = 0.25$ it lies between $0.82$
+and $0.90$. The steps on the point mass then pass as strictly above the threshold, and
+above-threshold steps in the high-congestion band, the point mass among them, make up
+$57$--$77\%$ of the attacks at $b = 0.25$, while ties fall to $6$--$11\%$.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Results Under the Full Domain Clamp}
+\label{sec:results_full_clamp}
+
+Every result in this section, for both scopes and for both the attack and the random
+control, was obtained under the \emph{full domain clamp}: after the $\ell_\infty$
+projection, every feature of the perturbed observation is re-projected onto $[0,1]$.
+The clamp is recorded in each evaluation record, and it is the same for all 70
+configurations reported here. As set out in Section~\ref{subsec:learned_adversary},
+this is stricter than the domain constraint of the FGSM study of
+Section~\ref{subsec:base_fgsm}, which clamped only the normalised bandwidth features.
+The admissible set used here is therefore a strict subset of the one used by the
+baseline, with roughly a third of the available perturbation range removed.
+
+Three consequences follow. First, because the attack and its random control share the
+same set, the adversarial gap remains internally valid, and every comparison
+\emph{within} this section is sound, including the comparison between scopes. Second,
+the damage measured here is not a lower bound on the damage attained under the
+baseline's admissible set, even though that set is larger: the adversaries of
+Section~\ref{sec:results_parity_clamp} were trained separately, and
+Section~\ref{sec:results_clamp_effect} shows them doing less damage than the adversaries
+of this section on several variants. Third, a direct comparison of absolute PDR figures
+against the published FGSM numbers is not licensed, since the attacker here operates
+under a different constraint; that comparison belongs to the FGSM-parity clamp.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Independent scope: sensitivity to the timing budget}
+\label{subsec:results_ind_timing}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{timing_sweep_gap_independent.png}
+  \caption{Independent scope, full domain clamp. Adversarial gap for all seven victim
+           variants at $\varepsilon = 0.30$, $n = 30$ paired episodes.
+           \textbf{Left:} gap against the requested timing budget, with the mean
+           realised attack rate printed beneath each tick and the ungated run
+           included as the 100\% reference; filled markers denote a 95\% confidence
+           interval excluding zero, hollow markers a null. \textbf{Right:} the same
+           gaps plotted against the fraction of routing decisions the attack
+           actually changed, on a logarithmic axis, with each variant drawn as one
+           path walking from $b = 0.10$ through to the ungated run.}
+  \label{fig:sweep_independent}
+\end{figure}
+
+The left panel of Figure~\ref{fig:sweep_independent} shows the gap rising
+monotonically with the timing budget for every variant that is attackable at all.
+The realised attack rates printed under the ticks confirm that the gate spends the
+budget it is given: requested budgets of $0.10$, $0.15$, $0.20$ and $0.25$ realise,
+averaged over the seven variants, as $10.0\%$, $15.0\%$, $19.9\%$ and $24.9\%$
+respectively. This matters because the critical-state score has a point mass, which
+Section~\ref{subsec:results_parity_triggers} locates at $0.90$, so a large block of
+timesteps ties at exactly the trigger threshold at the tightest budgets; without the
+tie rationing described in Section~\ref{subsec:timed_attack} the realised rate cannot
+fall below the fraction of steps on that point mass, and the two tightest budgets
+collapse into nearly the same experiment.
+
+Table~\ref{tab:gap_sweep_independent} gives the underlying values. The architectural
+pattern is sharp: the duelling value head is the vulnerable axis. All three duelling
+variants without a local-critic GNN reach a significant gap at full rate, led by
+\texttt{CC-Duelling-GNN} at $+2.81$~pp and \texttt{LC-Duelling} at $+2.27$~pp, while
+every simple-head variant remains at or below $+0.22$~pp. Three variants,
+\texttt{CC-Simple-GNN}, \texttt{LC-Simple} and \texttt{LC-Duelling-GNN}, never
+separate from zero at any budget.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Independent scope, full domain clamp. Adversarial gap in percentage points
+           by victim variant and requested timing budget, at $\varepsilon = 0.30$ and
+           $n = 30$ paired episodes. Bold entries have a 95\% confidence interval
+           excluding zero. Positive values indicate the attack cost the victim more
+           than the random control of the same magnitude; negative values indicate
+           the reverse.}
+  \label{tab:gap_sweep_independent}
+  \begin{tabular}{lrrrrr}
+    \hline
+    \textbf{Variant} & \textbf{0.10} & \textbf{0.15} & \textbf{0.20} & \textbf{0.25} & \textbf{ungated} \\
+    \hline
+    CC-Simple        & $-0.01$ & $+0.00$ & $+0.03$ & $\mathbf{+0.07}$ & $\mathbf{+0.22}$ \\
+    CC-Duelling      & $+0.13$ & $+0.17$ & $+0.19$ & $+0.24$ & $\mathbf{+1.26}$ \\
+    CC-Simple-GNN    & $-0.01$ & $+0.00$ & $+0.00$ & $-0.01$ & $-0.04$ \\
+    CC-Duelling-GNN  & $\mathbf{+0.75}$ & $\mathbf{+0.77}$ & $\mathbf{+1.04}$ & $\mathbf{+1.22}$ & $\mathbf{+2.81}$ \\
+    LC-Simple        & $-0.12$ & $-0.32$ & $-0.28$ & $-0.25$ & $-0.36$ \\
+    LC-Duelling      & $\mathbf{+0.34}$ & $\mathbf{+0.55}$ & $\mathbf{+0.58}$ & $\mathbf{+0.71}$ & $\mathbf{+2.27}$ \\
+    LC-Duelling-GNN  & $+0.00$ & $+0.00$ & $+0.01$ & $+0.01$ & $-0.05$ \\
+    \hline
+  \end{tabular}
+\end{table}
+
+Under this clamp, the budget sweep also supports the efficiency claim that motivated
+the timing gate.
+Normalising each gap by the realised attack rate gives the damage bought per
+attacked timestep, and for \texttt{CC-Duelling-GNN} this falls from $7.3$~pp per
+unit rate at $b = 0.10$ to $2.8$~pp when ungated, a factor of $2.6$; for
+\texttt{LC-Duelling} the same ratio is $1.5$. For these adversaries, concentrating the
+budget on high-utilisation states is therefore not merely cheaper but more efficient
+per step spent, which is the property that motivates dividing the attack across time
+in the manner of PGD. The effect is not universal: \texttt{CC-Duelling} shows
+essentially no efficiency gain, its damage scaling in proportion to the number of steps
+attacked, and under the FGSM-parity clamp no variant shows one
+(Section~\ref{subsec:results_parity_timing}).
+
+One caveat applies to the ungated column. Because the adversaries were trained with
+the gate at $b = 0.25$, evaluating them without a gate asks them to act on the
+remaining $75\%$ of states they never encountered during training. That the ungated
+run is nonetheless the strongest point for every attackable variant indicates the
+learned perturbation direction generalises beyond the state distribution it was
+fitted on, rather than being specialised to high-utilisation moments.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Independent scope: decision flips versus delivered damage}
+\label{subsec:results_ind_flips}
+
+The right panel of Figure~\ref{fig:sweep_independent} addresses the assumption
+implicit in reporting flip rates as an attack outcome. Within any single variant
+the relationship holds in the expected direction: as the budget loosens, more
+routing decisions change and more damage follows, so each path slopes upward.
+Across variants the relationship fails completely. At the right-hand edge of the
+panel four variants sit within a narrow band of $14$--$17\%$ of decisions flipped,
+yet their gaps span from $-0.36$~pp to $+2.81$~pp, a spread of more than three
+percentage points at essentially identical flip rates.
+Table~\ref{tab:ungated_detail_independent} gives these figures directly.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Independent scope, full domain clamp. Ungated results at
+           $\varepsilon = 0.30$, $n = 30$ paired episodes: adversarial gap with its
+           95\% confidence interval, and the fraction of routing decisions changed by
+           the attack and by the random control.}
+  \label{tab:ungated_detail_independent}
+  \begin{tabular}{lrcrr}
+    \hline
+    \textbf{Variant} & \textbf{Gap (pp)} & \textbf{95\% CI} & \textbf{Attack flips} & \textbf{Random flips} \\
+    \hline
+    CC-Simple        & $+0.22$ & $[+0.04, +0.41]$ & $9.15\%$  & $6.80\%$  \\
+    CC-Duelling      & $+1.26$ & $[+0.73, +1.78]$ & $14.14\%$ & $12.02\%$ \\
+    CC-Simple-GNN    & $-0.04$ & $[-0.10, +0.02]$ & $0.50\%$  & $0.34\%$  \\
+    CC-Duelling-GNN  & $+2.81$ & $[+2.03, +3.59]$ & $16.69\%$ & $15.45\%$ \\
+    LC-Simple        & $-0.36$ & $[-1.06, +0.34]$ & $15.94\%$ & $12.91\%$ \\
+    LC-Duelling      & $+2.27$ & $[+1.60, +2.94]$ & $16.16\%$ & $11.98\%$ \\
+    LC-Duelling-GNN  & $-0.05$ & $[-0.18, +0.07]$ & $3.82\%$  & $2.18\%$  \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\texttt{LC-Simple} is the clearest counterexample. Its path in the right panel runs
+downward as it moves right, so the more routing decisions the attack changes, the
+\emph{better} the network performs relative to the random control. Flipping a
+routing decision is evidently not the same as flipping it to a worse path, and on
+this variant the learned direction is, on balance, no worse than noise. The random
+control is itself instructive here: it changes $12$--$15\%$ of decisions on the
+high-flip variants, which means a raw flip count says almost nothing about whether
+an attacker is doing anything an untargeted disturbance would not.
+
+The logarithmic axis separates two failure modes that a linear axis renders
+identical. \texttt{CC-Simple-GNN} never moves the argmax at all, flipping between
+$0.02\%$ and $0.50\%$ of decisions across the entire sweep; the perturbation is not
+being absorbed downstream, it is failing to change the selected path in the first
+place. This is the signature either of a policy whose decision boundaries lie beyond
+the $\varepsilon$-ball, or of an adversary that has failed to learn a perturbation able
+to cross them. Since the learned adversary never differentiates the victim, gradient
+masking in the usual sense cannot be the cause.
+\texttt{LC-Duelling-GNN} behaves quite differently: it flips $3.82\%$ of decisions
+at full rate, more than seven times \texttt{CC-Simple-GNN}'s rate, and still returns
+a gap of $-0.05$~pp. Here the routing genuinely changes and the packets arrive
+regardless, which is absorption in the network rather than insensitivity in the
+policy. The distinction matters for what would follow: the first case might yield to
+a stronger optimiser or a larger budget, whereas the second reflects path redundancy
+that no observation-space perturbation of this form is likely to overcome.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Coordinated scope}
+\label{subsec:results_coord}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{timing_sweep_gap_coordinated.png}
+  \caption{Coordinated scope, full domain clamp. Adversarial gap for all seven victim
+           variants at $\varepsilon = 0.30$, $n = 30$ paired episodes, with the
+           perturbation emitted jointly for the whole compromised group. Panels and
+           markers as in Figure~\ref{fig:sweep_independent}. A thin line joins a
+           label to its series where the label had to be moved clear of the data.}
+  \label{fig:sweep_coordinated}
+\end{figure}
+
+Figure~\ref{fig:sweep_coordinated} repeats the sweep with the perturbation coordinated
+across the compromised agents, and Table~\ref{tab:gap_sweep_coordinated} gives the
+values. The timing gate behaves identically in both scopes, realising $10.0\%$,
+$15.0\%$, $19.9\%$ and $24.9\%$ of steps at the four budgets, so any difference from the
+independent scope is due to the coordination of the perturbation rather than to how
+often it is applied.
+
+The architectural pattern, however, changes markedly. The two local-critic variants
+without GNN encoding become the most vulnerable, and both are attacked significantly
+at \emph{every} budget. \texttt{LC-Simple}, which the independent attack never harmed,
+rises monotonically from $+0.63$~pp at $b = 0.10$ to $+1.08$~pp at $b = 0.25$ and
+$+2.94$~pp ungated. \texttt{LC-Duelling} follows the same course, from $+0.50$~pp to
+$+1.17$~pp and $+2.94$~pp. The central-critic duelling variants, in contrast, are
+attacked significantly only when the adversary acts on every step:
+\texttt{CC-Duelling} reaches $+2.29$~pp and \texttt{CC-Duelling-GNN} $+1.46$~pp
+ungated, but neither separates from zero at any gated budget. \texttt{CC-Simple},
+\texttt{CC-Simple-GNN} and \texttt{LC-Duelling-GNN} remain unaffected throughout.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Coordinated scope, full domain clamp. Adversarial gap in percentage points
+           by victim variant and requested timing budget, at $\varepsilon = 0.30$ and
+           $n = 30$ paired episodes. Bold entries have a 95\% confidence interval
+           excluding zero.}
+  \label{tab:gap_sweep_coordinated}
+  \begin{tabular}{lrrrrr}
+    \hline
+    \textbf{Variant} & \textbf{0.10} & \textbf{0.15} & \textbf{0.20} & \textbf{0.25} & \textbf{ungated} \\
+    \hline
+    CC-Simple        & $-0.01$ & $+0.01$ & $+0.04$ & $+0.06$ & $-0.10$ \\
+    CC-Duelling      & $-0.11$ & $+0.05$ & $+0.02$ & $+0.26$ & $\mathbf{+2.29}$ \\
+    CC-Simple-GNN    & $+0.00$ & $+0.01$ & $+0.01$ & $+0.01$ & $+0.02$ \\
+    CC-Duelling-GNN  & $+0.07$ & $-0.16$ & $-0.14$ & $-0.09$ & $\mathbf{+1.46}$ \\
+    LC-Simple        & $\mathbf{+0.63}$ & $\mathbf{+0.67}$ & $\mathbf{+0.80}$ & $\mathbf{+1.08}$ & $\mathbf{+2.94}$ \\
+    LC-Duelling      & $\mathbf{+0.50}$ & $\mathbf{+0.80}$ & $\mathbf{+0.92}$ & $\mathbf{+1.17}$ & $\mathbf{+2.94}$ \\
+    LC-Duelling-GNN  & $+0.00$ & $-0.01$ & $+0.00$ & $+0.00$ & $-0.05$ \\
+    \hline
+  \end{tabular}
+\end{table}
+
+Where coordination works, dividing the attack across time remains efficient. The
+damage bought per attacked step for \texttt{LC-Simple} is $6.3$~pp per unit rate at
+$b = 0.10$ against $2.9$~pp ungated, a factor of $2.2$, and for \texttt{LC-Duelling} it
+is $5.0$~pp against $2.9$~pp, a factor of $1.7$. The right panel repeats the lesson of
+Section~\ref{subsec:results_ind_flips}: the paths of \texttt{LC-Simple} and
+\texttt{LC-Duelling} nearly coincide, ending at $+2.94$~pp with $14.7\%$ and $15.6\%$ of
+decisions flipped, while \texttt{CC-Duelling-GNN} ends at only $+1.46$~pp despite
+flipping $16.0\%$, more than either.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Effect of coordination}
+\label{subsec:results_coordination_effect}
+
+The two scopes can be compared exactly. Both were evaluated on the same traffic seed,
+and because neither the clean arm nor the random control depends on the adversary,
+their per-episode PDR series are bit-identical across the two scopes in all 35
+configurations. The difference between the coordinated and independent adversarial
+gaps is then exactly the per-episode difference between the two attack arms,
+\begin{equation}
+  \Delta^{\text{coord}}
+  = \Delta^{\text{adv}}_{\text{coord}} - \Delta^{\text{adv}}_{\text{ind}}
+  = \frac{1}{n} \sum_{e=1}^{n}
+    \Big( \mathrm{PDR}^{\text{atk,ind}}_{e} - \mathrm{PDR}^{\text{atk,coord}}_{e} \Big),
+  \label{eq:coordination_effect}
+\end{equation}
+which is paired within each episode and carries a confidence interval of the same form
+as Equation~\eqref{eq:adversarial_gap}. A positive value means coordination increased
+the damage done. Table~\ref{tab:coordination_effect} reports it for every
+configuration.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Effect of coordination under the full domain clamp: coordinated minus
+           independent adversarial gap, in percentage points, by victim variant and
+           requested timing budget ($\varepsilon = 0.30$, $n = 30$ paired episodes).
+           Positive values mean coordination increased the damage. Bold entries
+           have a 95\% confidence interval on the paired difference of
+           Equation~\eqref{eq:coordination_effect} excluding zero.}
+  \label{tab:coordination_effect}
+  \begin{tabular}{lrrrrr}
+    \hline
+    \textbf{Variant} & \textbf{0.10} & \textbf{0.15} & \textbf{0.20} & \textbf{0.25} & \textbf{ungated} \\
+    \hline
+    CC-Simple        & $+0.00$ & $+0.01$ & $+0.01$ & $-0.01$ & $\mathbf{-0.32}$ \\
+    CC-Duelling      & $-0.24$ & $-0.12$ & $-0.17$ & $+0.01$ & $\mathbf{+1.03}$ \\
+    CC-Simple-GNN    & $+0.01$ & $+0.01$ & $+0.01$ & $+0.01$ & $+0.06$ \\
+    CC-Duelling-GNN  & $\mathbf{-0.68}$ & $\mathbf{-0.93}$ & $\mathbf{-1.18}$ & $\mathbf{-1.32}$ & $\mathbf{-1.35}$ \\
+    LC-Simple        & $\mathbf{+0.75}$ & $\mathbf{+1.00}$ & $\mathbf{+1.08}$ & $\mathbf{+1.34}$ & $\mathbf{+3.29}$ \\
+    LC-Duelling      & $\mathbf{+0.17}$ & $\mathbf{+0.25}$ & $\mathbf{+0.34}$ & $\mathbf{+0.46}$ & $\mathbf{+0.67}$ \\
+    LC-Duelling-GNN  & $+0.00$ & $-0.01$ & $-0.01$ & $-0.01$ & $+0.00$ \\
+    \hline
+  \end{tabular}
+\end{table}
+
+Coordination does something, but not uniformly. On the two local-critic variants
+without GNN encoding it increases damage significantly at every budget.
+For \texttt{LC-Simple} the gain grows from $+0.75$~pp at $b = 0.10$ to $+3.29$~pp
+ungated, turning a variant the independent attack could not harm into one of the most
+damaged in the study. For \texttt{LC-Duelling}, already vulnerable, the gain grows from
+$+0.17$~pp to $+0.67$~pp. On the central-critic variants the effect is mixed. It is nil
+at every gated budget except for \texttt{CC-Duelling-GNN}, where coordination
+significantly \emph{reduces} damage at every budget, by between $0.68$ and $1.35$~pp.
+It appears only when attacking every step, where it helps \texttt{CC-Duelling}
+($+1.03$~pp) and hurts \texttt{CC-Simple} ($-0.32$~pp). The two GNN variants that
+resisted the independent attack are unaffected by coordination as well.
+
+The gains do not come from changing more decisions. On \texttt{LC-Simple} at $b = 0.25$
+the coordinated attack flips fewer routing decisions than the independent one, $1.91\%$
+against $2.24\%$, while the gap moves from $-0.25$~pp to $+1.08$~pp; ungated, its flip
+rate falls from $15.94\%$ to $14.65\%$ as the gap rises by more than three percentage
+points. The converse also occurs: on \texttt{CC-Simple} coordination raises the ungated
+flip rate from $9.15\%$ to $12.94\%$ while the gap falls. What coordination changes is
+\emph{which} decisions change together, and only that relates to delivered damage.
+
+The concentration of the gains on the local-critic variants is consistent with how the
+two critic domains of Equation~\eqref{eq:arch_critic_domains} are trained. A local
+critic conditions only on its own agent's observation and action, so the policies it
+trains never receive a signal about how several agents' routing choices combine on a
+shared link. A central critic conditions on the joint action, so its policies are
+trained against a value model that accounts for exactly those joint consequences. A
+perturbation that steers several agents onto the same link targets what the local
+critic cannot see. This explanation is consistent with the pattern but is not
+established by it: in particular, it does not account for why the effect disappears
+for \texttt{LC-Duelling-GNN}, and it does not predict the loss on
+\texttt{CC-Duelling-GNN}.
+
+That loss calls for a specific caution. As described in
+Section~\ref{subsec:learned_adversary}, the coordinated adversary acts on the joint
+observation of all fourteen compromised agents, yet stores one replay transition per
+step rather than one per agent, so it learns from far fewer and far higher-dimensional
+samples than the independent adversary does. The large gains on the local-critic
+variants, obtained under the same condition, show that the reduced sample count alone
+does not explain the overall pattern. It cannot, however, be ruled out as the cause of
+the deficit on \texttt{CC-Duelling-GNN} in particular, and separating an under-trained
+adversary from a genuine effect of coordination on that variant would require an
+analysis of the coordinated adversary's learning signal.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Effect of the Domain Clamp}
+\label{sec:results_clamp_effect}
+
+The two clamps can be compared on paired episodes in the independent scope. The clean
+arm is bit-identical across the clamps, as noted in
+Section~\ref{sec:results_parity_clamp}, but the random control is not, since each
+clamp's control draws from its own admissible set. The difference between the two
+adversarial gaps is nevertheless paired within each episode,
+\begin{equation}
+  \Delta^{\text{clamp}}
+  = \Delta^{\text{adv}}_{\text{parity}} - \Delta^{\text{adv}}_{\text{full}}
+  = \frac{1}{n} \sum_{e=1}^{n}
+    \Big[ \big( \mathrm{PDR}^{\text{rnd,parity}}_{e} - \mathrm{PDR}^{\text{atk,parity}}_{e} \big)
+        - \big( \mathrm{PDR}^{\text{rnd,full}}_{e} - \mathrm{PDR}^{\text{atk,full}}_{e} \big) \Big],
+  \label{eq:clamp_effect}
+\end{equation}
+and carries a confidence interval of the same form as
+Equation~\eqref{eq:adversarial_gap}. A positive value means the parity-clamp adversary
+did more damage, relative to its own random control, than the full-clamp adversary.
+Table~\ref{tab:clamp_effect} reports it for every configuration.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Effect of the domain clamp in the independent scope: FGSM-parity minus full
+           clamp adversarial gap, in percentage points, by victim variant and requested
+           timing budget ($\varepsilon = 0.30$, $n = 30$ paired episodes). Positive
+           values mean the parity-clamp adversary did more damage. Bold entries have a
+           95\% confidence interval on the paired difference of
+           Equation~\eqref{eq:clamp_effect} excluding zero.}
+  \label{tab:clamp_effect}
+  \begin{tabular}{lrrrrr}
+    \hline
+    \textbf{Variant} & \textbf{0.10} & \textbf{0.15} & \textbf{0.20} & \textbf{0.25} & \textbf{ungated} \\
+    \hline
+    CC-Simple        & $+0.00$ & $+0.02$ & $-0.05$ & $-0.03$ & $\mathbf{-0.24}$ \\
+    CC-Duelling      & $-0.17$ & $-0.07$ & $-0.01$ & $-0.16$ & $-0.67$ \\
+    CC-Simple-GNN    & $+0.01$ & $+0.00$ & $-0.01$ & $+0.01$ & $\mathbf{+0.08}$ \\
+    CC-Duelling-GNN  & $\mathbf{-0.92}$ & $\mathbf{-1.02}$ & $\mathbf{-0.93}$ & $\mathbf{-1.37}$ & $\mathbf{-2.03}$ \\
+    LC-Simple        & $\mathbf{+0.52}$ & $\mathbf{+1.33}$ & $\mathbf{+1.55}$ & $\mathbf{+1.70}$ & $\mathbf{+6.26}$ \\
+    LC-Duelling      & $\mathbf{-0.82}$ & $\mathbf{-1.26}$ & $\mathbf{-1.61}$ & $\mathbf{-1.53}$ & $\mathbf{-3.58}$ \\
+    LC-Duelling-GNN  & $+0.00$ & $+0.01$ & $+0.00$ & $-0.01$ & $-0.13$ \\
+    \hline
+  \end{tabular}
+\end{table}
+
+The clamp changes the result significantly on three variants at every budget, and not
+in one direction. \texttt{LC-Simple} gains between $0.52$ and $6.26$~pp under the parity
+clamp, while \texttt{CC-Duelling-GNN} loses between $0.92$ and $2.03$~pp and
+\texttt{LC-Duelling} between $0.82$ and $3.58$~pp. These changes come from the attack
+arm rather than from the control. Ungated, the parity-clamp attack arm delivers
+$6.92$~pp less than the full-clamp attack arm on \texttt{LC-Simple}, and $2.80$ and
+$3.68$~pp more on \texttt{CC-Duelling-GNN} and \texttt{LC-Duelling}, while the random
+control moves by less than one percentage point on all three. On \texttt{CC-Duelling}
+both arms move: ungated, the parity-clamp attack arm delivers $2.49$~pp more, but its
+random control also delivers $1.82$~pp more, and the net change of $-0.67$~pp is not
+significant. \texttt{CC-Simple} and \texttt{CC-Simple-GNN} change significantly only
+ungated, and by less than $0.25$~pp, and \texttt{LC-Duelling-GNN} does not change.
+
+Two conclusions follow. First, each measured gap describes a trained adversary, not a
+bound on what the victim can suffer. The parity set contains the full-clamp set, so an
+optimal adversary could do at least as much damage under it; the trained adversaries
+instead do less on two variants, and on \texttt{LC-Duelling} the sign reverses. A null
+result is correspondingly weak evidence of robustness: \texttt{LC-Simple}, which the
+full-clamp adversary does not harm at any budget, is the most damaged variant under the
+parity clamp, and is also harmed by the coordinated full-clamp adversary of
+Section~\ref{subsec:results_coord}. Second, the architectural conclusion of
+Section~\ref{subsec:results_ind_timing}, that the duelling value head is the vulnerable
+axis, does not survive retraining the adversary under the baseline's admissible set.
+The findings that hold under both clamps are narrower. \texttt{CC-Simple-GNN} and
+\texttt{LC-Duelling-GNN} are not harmed at any budget under either clamp, and
+\texttt{CC-Simple} by at most $0.22$~pp; and under both clamps the fraction of decisions
+an attack changes does not predict the damage it does.
+
+The two sets differ only outside the bandwidth block, where the parity clamp allows
+features to be pushed below zero or above one, outside the $[0,1]$ range that the full
+clamp enforces. Whether access to these out-of-range inputs is what makes \texttt{LC-Simple}
+vulnerable, and what misleads the adversary trained against \texttt{LC-Duelling}, has
+not been tested.

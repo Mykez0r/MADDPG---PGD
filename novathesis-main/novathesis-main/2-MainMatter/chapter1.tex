@@ -18,54 +18,172 @@
 \setlength\epigraphwidth{12.5cm}
 \setlength\epigraphrule{0pt}
 
-% \section{Welcome to the \novathesis\ Template}
-% \label{sec:if_you_use_this_template}
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Context and Motivation}
+\label{sec:intro_context}
 
-\paragraph{}As the field of telecommunications progresses issues such as scalability, routing, quality of
-service, resource management and network security become increasingly complex. Recent studies 
-turn to Artificial Intelligence (AI) and Machine Learning (ML) for solutions, specifically MADDPG and GNN models involving DRL 
-agents to make optimal routing decisions.
+As telecommunication networks grow in scale and heterogeneity, routing, quality of
+service and resource management become increasingly difficult to handle with
+hand-crafted rules. Traditional routing protocols such as OSPF and BGP rely on static,
+rule-based decisions that adapt poorly to variable traffic, heterogeneous
+Quality-of-Service (QoS) requirements and competing optimisation constraints. Deep
+Reinforcement Learning (DRL) has emerged as an alternative, allowing routing agents to
+learn adaptive policies directly from observations of the network rather than from
+explicitly programmed rules~\cite{Tian2023maddpgslice}.
 
-The convergence of Deep Reinforcement Learning (DRL), Graph Neural Networks (GNNs), 
-and automatization of network management and configuration represents a radical change in how modern networks 
-are controlled and optimized. Traditional routing protocols, such as OSPF and BGP, 
-employ static rule-based approaches that struggle with dynamic network environments characterized by heterogeneous Quality-of-Service (QoS) 
-requirements, variable traffic patterns, and multiple optimization constraints. 
-Deep Reinforcement Learning has emerged as a powerful alternative, enabling routing agents 
-to learn adaptive policies directly from real-time network observations without explicit 
-programming of optimization rules. \cite{Tian2023maddpgslice}
+Multi-agent formulations extend this to distributed control, in which every forwarding
+node is an agent that decides locally while the paths chosen collectively determine
+end-to-end delivery. Multi-Agent Deep Deterministic Policy Gradient (MADDPG) is a
+natural fit for this setting: under centralised training with decentralised execution,
+each agent learns from a critic that may observe the whole system during training, yet
+acts on its own local observation once deployed~\cite{lowe2017multi}. Combined with
+Graph Neural Networks, which exploit the graph structure of the topology, such
+controllers have been reported to improve scalability, topology awareness and
+generalisation across network
+configurations~\cite{Almasan_2022,wang2024multi,huang2025era,9974607,zhang2025dramadynamicpacketrouting,11134361}.
 
-Multi-Agent DRL (MADRL), more specifically utilizing Multi-Agent Deep Deterministic Policy Gradient (MADDPG), systems extend this capability to distributed network environments 
-where multiple autonomous agents must coordinate routing decisions across different nodes 
-while maintaining local operational autonomy. When enhanced with Graph Neural Networks that 
-naturally exploit the graph-structured topology of networks, these systems achieve improved 
-scalability, topology-awareness, and the ability to generalize across different network 
-configurations. \cite{wang2024multi} \cite{huang2025era} \cite{9974607} \cite{zhang2025dramadynamicpacketrouting} \cite{11134361}.
+The same property that makes these controllers adaptive also exposes them. A learned
+routing policy decides from the network state it perceives, and neural policies are
+known to be sensitive to small, deliberately chosen perturbations of their
+inputs~\cite{szegedy2014intriguingpropertiesneuralnetworks,goodfellow2015explainingharnessingadversarialexamples}.
+Attacks such as the Fast Gradient Sign Method
+(FGSM)~\cite{goodfellow2015explainingharnessingadversarialexamples}, Projected Gradient
+Descent (PGD)~\cite{madry2019deeplearningmodelsresistant} and the Carlini and Wagner
+attack~\cite{carlini2017evaluatingrobustnessneuralnetworks} were developed largely for
+image classification, where one perturbation targets one prediction. In reinforcement
+learning the stakes differ: a perturbed observation changes an action, the action
+changes the states that follow, and the damage accumulates over a
+trajectory~\cite{zhang2020robust}. For a routing controller, an adversary who can
+corrupt the telemetry an agent receives, without ever touching the network itself, can
+redirect traffic. How vulnerable learned routing controllers are to such an adversary
+remains largely unexplored.
 
-\paragraph{}However DRL models have many well documented security vulnerabilities, consequences of which
-remain underexplored in the context of network routing. Common attacks such as the fast gradient sign method
-(FGSM) \cite{goodfellow2015explainingharnessingadversarialexamples}, the projected gradient descent (PGD)
-\cite{madry2019deeplearningmodelsresistant} and the Carlini and Wagner (CW) attack 
-\cite{carlini2017evaluatingrobustnessneuralnetworks} can manipulate model inputs to degrade performance or even implant backdoors
-as a gateway to further exploits \cite{dai2025effectivebackdoorattackgraph}. Some research has been done on the effects of adversarial 
-attacks on DRL models in the context of image classification, mostly focusing on 
-model robustness versus adversarial examples. \cite{wang2022attackingdefendingdeepreinforcement}
-\cite{goodfellow2015explainingharnessingadversarialexamples} \cite{villegas2024evaluating}.
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Problem Statement}
+\label{sec:intro_problem}
 
-\paragraph{}This thesis aims to explore the effects of adversarial attacks on MADDPG and GNN models in the context of network routing.
-Specifically, we will investigate how these attacks impact the performance of these models when used for routing
-decisions in a simulated network environment. We will implement and adapt FGSM and PGD algorithms to the network context,
-evaluating their effectiveness in degrading network performance metrics accross diverse scenarios.
+This thesis continues a line of research on a MADDPG routing controller developed in
+earlier work~\cite{amaral2021maddpg-routing}. A preceding dissertation in the same line
+attacked that controller with FGSM, perturbing each agent's observation in a single
+gradient step at every time step~\cite{TODO-colleague-fgsm}. The attack altered a
+substantial fraction of the routing decisions taken by the victim, yet recovered only
+a small part of the degradation achievable in principle, because the redundancy of the
+topology absorbed the redirected traffic.
 
-\paragraph{}The main contributions of this thesis are as follows:
+That result admits two readings. Either the controller is genuinely robust, or a
+single-step, per-agent adversary is too weak for its failure to count as evidence of
+robustness. The two cannot be separated without a stronger attacker, and this thesis
+provides one. The central research question is therefore:
+
+\begin{quote}
+\emph{Does the apparent robustness of MADDPG routing controllers to FGSM survive a
+stronger observation-space attack, one that coordinates its perturbation across agents
+and divides it across time?}
+\end{quote}
+
+\noindent It is broken down into four questions:
+\begin{enumerate}
+  \item[\textbf{RQ1}] Does dividing the attack across time, spending a limited budget
+        on the network's most critical states, buy more damage per attacked step than
+        perturbing every step?
+  \item[\textbf{RQ2}] Does coordinating the perturbation across compromised agents,
+        rather than attacking each agent in isolation, increase the damage?
+  \item[\textbf{RQ3}] Which architectural choices of the victim, namely its critic
+        domain, its value head and the use of GNN encoding, determine how vulnerable
+        it is?
+  \item[\textbf{RQ4}] Is the fraction of routing decisions an attack changes a
+        meaningful measure of the damage it does?
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Approach}
+\label{sec:intro_approach}
+
+The attack addresses the two weaknesses of the baseline in turn, drawing on a different
+source of inspiration for each. Where FGSM spends its whole perturbation budget in a
+single step, PGD divides it into a sequence of smaller projected
+steps~\cite{madry2019deeplearningmodelsresistant}. The attack carries this principle
+from the input into time: instead of applying a full-strength perturbation at every
+step, it acts on only a fraction of the steps, chosen by a critical-state score that
+identifies the moments at which the network's redundancy is thinnest. Where the
+baseline perturbs each agent in isolation, SAJA~\cite{guo2025sajastateactionjointattack}
+judges the perturbations of several victim agents together, by the centralised critic's
+value of the joint action they induce. Inspired by it, the attack coordinates its
+perturbation jointly across the compromised agents, so that several of them can be
+steered towards the same shared link.
+
+The attack is realised as a learned adversary. Because the victim is frozen, its
+policies are fixed, and against a fixed policy the problem of finding the optimal
+observation adversary is itself an ordinary Markov decision
+process~\cite{zhang2020robust}. The adversary is therefore trained by reinforcement
+learning to act in this coordinated and strategically timed way, learning which
+perturbation to apply from the damage its perturbations cause. Unlike FGSM, it never needs the gradients of the
+victim, only the ability to query its actions and a simulator to train against.
+
+The attack is evaluated against seven victim variants that differ in their critic
+domain, their value head and the use of GNN encoding. To keep the comparison with the
+FGSM study meaningful, the attack operates on the same frozen agents and within the
+same $\ell_\infty$ perturbation budget, and is scored under the same evaluation
+protocol. It is evaluated under the FGSM study's domain constraint and, as a second
+condition, under a stricter constraint that keeps every observation feature within
+$[0,1]$, with a separately trained adversary for each. Every configuration is run as three paired arms on identical traffic: a clean
+arm, a random control that perturbs by the same amount in a random direction, and the
+attack. The damage attributed to the attack is its margin over the random control,
+since any perturbation of that size disturbs the controller whether or not its
+direction was chosen adversarially.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Contributions}
+\label{sec:intro_contributions}
+
+The main contributions of this thesis are:
 \begin{itemize}
-    \item Adapting and validating FGSM and PGD adversarial attack algorithms to the 
-    context of network routing.
-    \item Evaluating the impact of these attacks on the performance of MADDPG and 
-    GNN routing agents across various network topologies and traffic patterns.
+  \item An observation-space attack on MADDPG routing controllers that coordinates
+        its perturbation across agents, inspired by SAJA, and divides it across time,
+        inspired by PGD. It is realised as a learned adversary grounded in the
+        State-Adversarial MDP.
+  \item A critical-state timing gate that spends a limited attack budget on
+        high-leverage moments. It includes a tie-rationing rule that makes the
+        realised attack rate match the requested budget, which a plain threshold
+        cannot do because the critical-state score concentrates on a few repeated
+        values.
+  \item A coordinated multi-agent formulation of the perturbation, motivated by
+        showing that any attack that treats agents independently optimises a
+        separable objective and cannot express convergence onto a shared link.
+  \item A paired evaluation protocol with a random control, which separates the
+        damage attributable to the attacker from that of any same-sized perturbation,
+        and which reports decisions changed separately from delivery lost.
+  \item An empirical study across seven victim architectures and two domain
+        constraints. Under the FGSM study's constraint, the independent attack
+        substantially damages the local-critic victim with a simple value head, which
+        the independent attack under the stricter constraint could not harm. Under the
+        stricter
+        constraint, the duelling value head is instead the most vulnerable choice,
+        and concentrating the budget on critical states buys more damage per attacked
+        step than attacking at every step, while neither finding holds under the FGSM
+        study's constraint. Against one victim the trained adversary even improves
+        delivery, so a learned adversary's failure to harm a victim is weak evidence
+        of robustness. Under both constraints, the fraction of decisions an attack
+        changes does not predict the damage it does. Coordination, evaluated under the
+        stricter constraint, significantly increases the damage done to local-critic
+        victims without GNN encoding, while its effect on central-critic victims is
+        mixed.
 \end{itemize}
 
-\paragraph{} The structure of this thesis preparation report is as follows: Chapter 1 provides an introduction
-to the research topic, outlining the motivation and objectives of the study. Chapter 2 reviews relevant literature,
-summarizing existing research on MADDPG, GNNs and adversarial attacks of respective architectures.
-Chapter 3 details the methodology and implementation of the working enviroment, FGSM and PGD adapted to the netwrok enviroment.
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Document Structure}
+\label{sec:intro_structure}
+
+The remainder of this document is organised as follows.
+Chapter~\ref{cha:literature_review} reviews the relevant literature: deep reinforcement
+learning and its application to routing, MADDPG, adversarial attacks on reinforcement
+learning agents including the State-Adversarial MDP, SAJA, FGSM and PGD, and graph
+neural networks together with the attacks that target them.
+Chapter~\ref{cha:methodology} describes the routing system and the FGSM baseline
+inherited from earlier work, the victim architectures under test, the attack with its
+SAJA-inspired coordination and PGD-inspired timing mechanisms, the learned adversary
+that realises it, and the evaluation
+protocol. Chapter~\ref{chap:results} presents the results under the FGSM study's domain
+constraint and under the stricter one, reporting the independent and coordinated
+scopes, the effect of coordination and the effect of the constraint itself.
+Chapter~5 concludes and outlines directions for future work.
