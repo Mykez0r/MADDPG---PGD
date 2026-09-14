@@ -231,6 +231,13 @@ def main():
                     help="plot only results under this admissible set; required "
                          "when the root holds results under more than one")
     ap.add_argument("--out", default="timing_sweep_gap.png")
+    # The panel titles state a finding, so they must be checked against each new
+    # dataset: under the FGSM-parity clamp one variant's gap falls with the budget.
+    ap.add_argument("--left-title",
+                    default="Gap grows with the budget\nfilled marker = 95% CI excludes zero")
+    ap.add_argument("--right-title",
+                    default="But flipping decisions does not buy damage\n"
+                            "paths walk 0.10 → ungated; equal flips, opposite outcomes")
     args = ap.parse_args()
 
     data, clamp = load(args.results_root, args.epsilon, args.mode, args.domain_clamp)
@@ -279,7 +286,9 @@ def main():
             ax.plot(i, r["gap"], marker="o", markersize=7, zorder=4, color=c,
                     markerfacecolor=(c if sig else SURFACE),
                     markeredgecolor=c, markeredgewidth=2)
-        ends.append((xs[-1] + 0.08, py[-1], variant, c, xs[-1]))
+        # label at the series' own last column: a variant with no ungated run
+        # ends at 0.25, and a label out in the empty "none" column misnames it
+        ends.append((px[-1] + 0.08, py[-1], variant, c, px[-1]))
 
     ax.set_xticks(xs)
     ax.set_xticklabels(labels, fontsize=9, color=MUTED)
@@ -287,8 +296,7 @@ def main():
     ax.set_xlabel("Timing budget (requested, with mean realised attack rate)",
                   fontsize=10, color=INK, labelpad=10)
     ax.set_ylabel("Adversarial gap (pp)   random − attack", fontsize=10, color=INK)
-    ax.set_title("Gap grows with the budget\nfilled marker = 95% CI excludes zero",
-                 fontsize=11, color=INK, loc="left", pad=12)
+    ax.set_title(args.left_title, fontsize=11, color=INK, loc="left", pad=12)
 
     # ── right panel: gap vs decisions actually flipped ───────────────────────
     # One connected path per variant, walking 0.10 -> ungated. Within a variant
@@ -340,9 +348,7 @@ def main():
     ax2.set_xlabel("Routing decisions flipped by the attack (log scale)",
                    fontsize=10, color=INK, labelpad=10)
     ax2.set_ylabel("Adversarial gap (pp)   random − attack", fontsize=10, color=INK)
-    ax2.set_title("But flipping decisions does not buy damage\n"
-                  "paths walk 0.10 → ungated; equal flips, opposite outcomes",
-                  fontsize=11, color=INK, loc="left", pad=12)
+    ax2.set_title(args.right_title, fontsize=11, color=INK, loc="left", pad=12)
 
     n = next(iter(next(iter(data.values())).values()))["episodes"]
     fig.suptitle(f"Learned adversary vs victim architecture, {args.mode} scope, "
