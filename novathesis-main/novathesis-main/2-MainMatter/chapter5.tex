@@ -3,23 +3,227 @@
 %% chapter5.tex
 %% NOVA thesis document file
 %%
-%% Chapter with lots of dummy text
+%% Conclusions and future work
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \typeout{NT FILE chapter5.tex}%
 
-\chapter{Lorem Ipsum}
-\label{cha:lorem_ipsum}
+\chapter{Conclusions and Future Work}
+\label{cha:conclusions}
 
-\lipsum[1-100]
-\lipsum[1-100]
-\lipsum[1-100]
-% \lipsum[1-100]
-% \lipsum[1-700]
-% \lipsum[1-700]
-% \lipsum[1-700]
-% \lipsum[1-700]
-% \lipsum[1-700]
-% \lipsum[1-700]
-% \lipsum[1-700]
-% \lipsum[1-700]
+This thesis asked whether the apparent robustness of MADDPG routing controllers to FGSM
+survives an observation-space attack that coordinates its perturbation across agents,
+inspired by SAJA, and divides it across time, inspired by PGD. The attack was realised
+as a learned adversary, trained against the frozen victim and evaluated against seven
+victim architectures in paired episodes with a random control. This chapter draws the
+conclusions of that evaluation on three questions, namely how effective the attack is
+compared with the FGSM baseline, what coordination adds over the independent attack,
+and what the timing budget achieves compared with attacking every step. It then sets out
+the limitations of those conclusions, above all their statistical relevance, and
+outlines the work that would strengthen or extend them.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusions}
+\label{sec:conclusions}
+
+\subsection{Effectiveness compared with the FGSM baseline}
+\label{subsec:conclusions_fgsm}
+
+The comparison with FGSM is only meaningful under the FGSM study's own admissible set,
+and it was made on the 15 episodes that the two evaluations share
+(Section~\ref{sec:results_fgsm_comparison}).
+
+The learned attack did not do more total damage than FGSM. It exceeded the
+baseline significantly in a single configuration, the independent attack on every step
+against \texttt{LC-Simple}, by $2.21$~pp. With the timing budget in place, the
+independent attack did significantly less damage than FGSM on four variants at every
+budget, which is partly by construction, since it acted on only $10$ to $25\%$ of the
+steps while FGSM acted on all of them. Coordination brought the attack closer to FGSM
+on the duelling variants: on \texttt{LC-Duelling} it could not be distinguished from
+FGSM at any budget, and on \texttt{CC-Duelling} from $b = 0.20$ onwards. When attacking
+every step, the coordinated attack did not differ significantly from FGSM on any
+variant. Where the learned attack has an advantage, it is per attacked step: on
+\texttt{LC-Simple} in the independent scope, and on \texttt{CC-Duelling} in the
+coordinated scope at $b = 0.25$, it caused more damage per step attacked than FGSM,
+without causing more damage in total.
+
+The victim family withstands the learned
+adversary about as well as it withstands the single-step baseline. The learned adversary
+is theoretically the stronger attacker: its policy class includes FGSM's per-step rule,
+and it can additionally coordinate across agents and choose when to act. That it does no
+more damage than FGSM therefore supports the robustness of the controller, rather than
+suggesting that the FGSM baseline was too weak to reveal its vulnerabilities. This conclusion
+concerns the trained adversaries that were evaluated, not the best attack that is
+possible. A learned adversary is only as strong as its training, and one of them
+steered \texttt{LC-Duelling} to deliver more packets than it did unattacked
+(Section~\ref{subsec:results_parity_timing}), which shows that a trained adversary can
+fail to find a damaging perturbation where one exists.
+
+\subsection{Coordination compared with the independent attack}
+\label{subsec:conclusions_coordination}
+
+Coordination changes the outcome of the attack, but it does not improve it uniformly.
+Under the FGSM study's admissible set it changed the damage significantly on four
+victims, in both directions (Section~\ref{subsec:results_parity_coordination_effect}).
+It increased the damage done to \texttt{LC-Duelling} at every budget, by $0.64$ to
+$1.58$~pp, turning a victim the independent adversary had helped into one the attack
+harms, and to \texttt{CC-Duelling} from $b = 0.15$ onwards, by up to $2.16$~pp. It
+reduced the damage done to \texttt{LC-Simple} at every budget, by $0.48$ to $3.99$~pp,
+on the variant the independent attack had harmed most. Under the stricter full clamp the
+pattern was different again: coordination made \texttt{LC-Simple} attackable and
+reduced the damage done to \texttt{CC-Duelling-GNN}
+(Section~\ref{subsec:results_coordination_effect}).
+
+The idea taken from SAJA, judging the perturbations of several agents together by
+their combined effect, is therefore able to reach damage that the independent attack
+does not, on some victims, while losing damage the independent attack had found on
+others. No single property of the victim explains which: the local-critic account that
+fits the full-clamp results does not fit the FGSM-parity ones. What coordination
+contributes depends on the pair of trained adversaries being compared as much as on the
+victim, and its gains do not come from changing more routing decisions.
+
+\subsection{Timing budget compared with attacking every step}
+\label{subsec:conclusions_timing}
+
+The timing gate itself works as designed. It realised the requested budgets closely,
+at $10.0\%$, $15.0\%$, $19.9\%$ and $24.9\%$ of steps on average, and the trigger
+analysis of Sections~\ref{subsec:results_parity_triggers}
+and~\ref{subsec:results_parity_coord} showed why the tie-rationing rule is needed. The
+critical-state score repeatedly takes the same value of $0.90$, and without rationing
+the two tightest budgets would both have attacked between $17\%$ and $21\%$ of steps.
+In the FGSM-parity runs, where the reasons were recorded, the attacks fired only when the
+most utilised link was at least $75\%$ utilised, and at the two tightest budgets almost
+entirely at $90\%$ or more. The composition of the
+triggers was the same in both scopes, so it is set by the network and the budget rather
+than by the perturbation.
+
+Spending a limited budget on those moments did not buy more total damage than
+attacking every step. For almost every victim the attack harmed, the ungated attack did
+the most damage. What the budget can buy is efficiency: in three of the four settings
+evaluated, the damage per attacked step was higher under a tight budget than when
+attacking every step, by a factor of up to $2.6$ on \texttt{CC-Duelling-GNN} under the
+full clamp and of about $1.3$ on \texttt{CC-Duelling} in the coordinated scope under
+the FGSM study's admissible set. It was not higher for the independent attack under that
+admissible set, where \texttt{LC-Simple}'s damage grew in proportion to the number of
+steps attacked. The PGD-inspired idea of dividing the attack across time therefore
+makes each attacked step count for more in most settings, but not reliably, and it does
+not make the attack more damaging overall. A limitation of the ungated comparison is
+that every adversary was trained with the gate at $b = 0.25$, so when attacking every
+step it acted on states it had not encountered during training.
+
+\subsection{Further observations}
+\label{subsec:conclusions_other}
+
+Three further results hold across the evaluation. The fraction of routing decisions an
+attack changes does not predict the damage it does: attacks that changed nearly the same
+fraction of decisions produced gaps several percentage points apart, so flip rates should
+not be reported as attack success. Which architectural choice appears vulnerable depends
+on the admissible set and the attack scope, so no single design can be named as the weak
+point of the controller. And two of the three GNN-encoded victims,
+\texttt{CC-Simple-GNN} and \texttt{LC-Duelling-GNN}, were not harmed by any attack in any
+setting.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Limitations}
+\label{sec:limitations}
+
+\subsection{Statistical relevance of the results}
+\label{subsec:limitations_statistics}
+
+The most important limitation concerns how far the results generalise beyond the
+particular adversaries that were trained. The learned adversary is not deterministic.
+Its actor and critic are initialised at random, exploration noise is added to its
+perturbations during training, and its updates are computed on randomly sampled
+minibatches, and training was not seeded, so two training runs with the same
+configuration produce different adversaries. Each of the 28 configurations of clamp,
+scope and victim was trained only once, and every result in Chapter~\ref{chap:results}
+describes that single trained adversary.
+
+The confidence intervals reported there are computed over 30 paired evaluation episodes,
+so they capture the variation between episodes for a given trained adversary, but not
+the variation between training runs. A significant gap therefore shows that the adversary
+that was trained beats its random control on these episodes, not that the attack
+configuration would do so reliably if it were trained again. The results most exposed to
+this are those that compare separately trained adversaries: the reversal on
+\texttt{LC-Duelling}, where the independent parity-clamp adversary improved delivery, the
+direction of the coordination effect, which compares the independent and coordinated
+adversaries, the effect of the domain clamp, which compares adversaries trained under
+each clamp, and the comparison with FGSM. The comparisons across timing budgets are less
+exposed, since every budget, and the ungated run, evaluates the same trained adversary
+under a different gate.
+
+Two more statistical caveats apply. All evaluations use a single traffic seed, and
+therefore the same 30 episodes, so the variation between traffic patterns is sampled only
+by those episodes. And the chapter reports well over a hundred confidence intervals, each
+at the $95\%$ level and without correction for multiple comparisons, so a few cells can be
+expected to exclude zero by chance. Isolated significant cells, such as a single budget at
+which an otherwise null variant separates from zero, should be read with caution, and the
+conclusions of Section~\ref{sec:conclusions} rest on patterns that hold across budgets
+rather than on individual cells.
+
+\subsection{Scope of the evaluation}
+\label{subsec:limitations_scope}
+
+The evaluation covers a single topology, a single stressed traffic regime, one
+perturbation budget of $\varepsilon = 0.30$ with
+every agent compromised. The critical-state score was motivated partly by the thinning of
+redundancy after link failures. Each adversary was
+trained with the timing gate at $b = 0.25$ only, so the tighter budgets act on a subset of
+its training states, and the ungated evaluation asks it to act on states it never
+encountered. The reasons why the timing gate fired were recorded only for the FGSM-parity
+runs.
+
+\subsection{Design of the attack and its control}
+\label{subsec:limitations_design}
+
+The adversary is rewarded with the fraction of forwarding events that end in a drop, a
+per-hop proxy for the end-to-end delivery on which it is scored, and the two can come
+apart. Inspection of the trained adversaries also indicates that their outputs sit close
+to the bounds of $[-1,1]$ for most features, so the attack perturbs most features by
+nearly the full $\varepsilon$, whereas the random control draws each feature's
+perturbation uniformly from $[-\varepsilon, \varepsilon]$. The adversarial gap therefore
+reflects the size of the perturbation as well as its direction, and a random control
+that also perturbs every feature by $\pm\varepsilon$, as the FGSM baseline's did, would
+isolate direction more cleanly. Finally, the threat model assumes that the attacker can
+train against a faithful simulator of the network and, when the attack is timed, read
+the utilisation of every link while it attacks.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Future Work}
+\label{sec:future_work}
+
+\subsection{Repeated training for statistical relevance}
+\label{subsec:future_repetition}
+
+The limitation of Section~\ref{subsec:limitations_statistics} can be addressed directly.
+The evaluation should be repeated with several independently trained adversaries per
+configuration, each trained from a different random seed, so that the spread between
+training runs can be measured and a result can be attributed to the attack rather than
+to one run.
+
+\subsection{Optimisation-based PGD and SAJA attacks}
+\label{subsec:future_optimisation}
+
+This thesis took PGD and SAJA as inspiration, but realised both mechanisms through a
+learned adversary rather than by solving an optimisation problem at each step. A natural
+next step is to implement the attacks in their original form, as gradient optimisation
+problems, and to evaluate them under the same protocol. A PGD
+attack~\cite{madry2019deeplearningmodelsresistant} would solve for each attacked step's
+perturbation by iterated projected gradient ascent on an attack objective, and could be
+combined with the same timing gate. A SAJA-style attack~\cite{guo2025sajastateactionjointattack}
+would perturb all compromised agents' observations jointly by gradient ascent, scoring
+each candidate by the centralised critic's value of the joint action it induces.
+
+Comparing these attacks with the learned adversary and with FGSM, within the same
+admissible set and on the same paired episodes, would show whether learning the
+adversary is beneficial for adversarial attacks on this controller, or whether direct
+optimisation achieves more damage. Such a study would have to address several obstacles.
+The routing decision is an $\operatorname{arg\,max}$ over candidate paths, so its gradient vanishes
+almost everywhere and must be approximated, for instance with a straight-through
+estimator. The local-critic variants provide no joint critic with which to score a
+coordinated perturbation, so a different joint objective would be needed for them. And
+the GNN encoder couples the agents' observations, so the gradient for one agent depends
+on the others'. It would also have to account for the difference in cost, since an
+optimisation-based attack requires many gradient evaluations of the victim at every
+attacked step, whereas the learned adversary needs only a single forward pass once
+trained and never needs the victim's gradients.

@@ -1,0 +1,39 @@
+%!TEX root = ../template.tex
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% appendix-triggers.tex
+%% NOVA thesis document file
+%%
+%% Appendix: heatmaps of why the timing gate fired (FGSM-parity runs)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\typeout{NT FILE appendix-triggers.tex}%
+
+\chapter{Timing Gate Triggers}
+\label{app:triggers}
+
+This appendix gives the heatmaps of why the timing gate fired in the FGSM-parity
+evaluations. They are discussed in Sections~\ref{subsec:results_parity_triggers}
+and~\ref{subsec:results_parity_coord}.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{trigger_reasons_independent_parity.png}
+  \caption{Independent scope, FGSM-parity domain clamp: why the timing gate fired in
+           the attack arm ($\varepsilon = 0.30$, $n = 30$ episodes). One panel per
+           trigger that occurred in at least one run, combining the case of
+           Equation~\eqref{eq:timing_rule} that admitted the step with the
+           congestion band of its score. Rows are victim variants and columns the
+           requested timing budget. Each cell gives the trigger's share of that run's
+           attacked steps, with the count beneath it, so the three panels of one cell
+           sum to 100\%. Ungated runs have no gate and are omitted.}
+  \label{fig:trigger_reasons_parity}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{trigger_reasons_coordinated_parity.png}
+  \caption{Coordinated scope, FGSM-parity domain clamp: why the timing gate fired in the
+           attack arm ($\varepsilon = 0.30$, $n = 30$ episodes). Panels, rows, columns
+           and cell contents as in Figure~\ref{fig:trigger_reasons_parity}.}
+  \label{fig:trigger_reasons_coordinated_parity}
+\end{figure}

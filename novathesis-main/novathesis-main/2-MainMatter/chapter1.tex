@@ -72,13 +72,15 @@ topology absorbed the redirected traffic.
 
 That result admits two readings. Either the controller is genuinely robust, or a
 single-step, per-agent adversary is too weak for its failure to count as evidence of
-robustness. The two cannot be separated without a stronger attacker, and this thesis
-provides one. The central research question is therefore:
+robustness. The two cannot be separated without an attacker that is free of those two
+limitations and theoretically stronger. This thesis builds one and compares it with
+FGSM on identical episodes and within the same admissible perturbation set. The central
+research question is therefore:
 
 \begin{quote}
 \emph{Does the apparent robustness of MADDPG routing controllers to FGSM survive a
-stronger observation-space attack, one that coordinates its perturbation across agents
-and divides it across time?}
+theoretically stronger observation-space attack, one that coordinates its perturbation
+across agents and divides it across time?}
 \end{quote}
 
 \noindent It is broken down into four questions:
@@ -112,13 +114,18 @@ value of the joint action they induce. Inspired by it, the attack coordinates it
 perturbation jointly across the compromised agents, so that several of them can be
 steered towards the same shared link.
 
-The attack is realised as a learned adversary. Because the victim is frozen, its
-policies are fixed, and against a fixed policy the problem of finding the optimal
-observation adversary is itself an ordinary Markov decision
-process~\cite{zhang2020robust}. The adversary is therefore trained by reinforcement
-learning to act in this coordinated and strategically timed way, learning which
-perturbation to apply from the damage its perturbations cause. Unlike FGSM, it never needs the gradients of the
-victim, only the ability to query its actions and a simulator to train against.
+The attack is realised as the learned observation adversary of the State-Adversarial
+MDP~\cite{zhang2020robust}. Because the victim is frozen, its policies are fixed, and
+against a fixed policy the problem of finding the optimal observation adversary is
+itself an ordinary Markov decision process. The adversary is therefore trained by
+reinforcement learning to act in this coordinated and strategically timed way, learning
+which perturbation to apply from the damage its perturbations cause. In principle this
+makes it stronger than FGSM, since within the same admissible set the optimal such
+adversary is at least as damaging, by its own measure of damage, as any deterministic
+per-step perturbation rule, FGSM included. It also knows less about the victim: it
+never needs the victim's gradients, only its actions during training. It does, however,
+need a faithful simulator of the network to train against and, when its attack is timed,
+the utilisation of every link while it attacks.
 
 The attack is evaluated against seven victim variants that differ in their critic
 domain, their value head and the use of GNN encoding. To keep the comparison with the
@@ -126,11 +133,12 @@ FGSM study meaningful, the attack operates on the same frozen agents and within 
 same $\ell_\infty$ perturbation budget, and is scored under the same evaluation
 protocol. It is evaluated under the FGSM study's domain constraint and, as a second
 condition, under a stricter constraint that keeps every observation feature within
-$[0,1]$, with a separately trained adversary for each. Every configuration is run as three paired arms on identical traffic: a clean
-arm, a random control that perturbs by the same amount in a random direction, and the
-attack. The damage attributed to the attack is its margin over the random control,
-since any perturbation of that size disturbs the controller whether or not its
-direction was chosen adversarially.
+$[0,1]$, with a separately trained adversary for each. Every configuration is run as
+three paired arms on identical traffic: a clean arm, a random control that draws a
+random perturbation from the same admissible set, and the attack. The damage attributed
+to the attack is its margin over the random control, since any perturbation within
+that set disturbs the controller whether or not its direction was chosen
+adversarially.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Contributions}
@@ -138,36 +146,26 @@ direction was chosen adversarially.
 
 The main contributions of this thesis are:
 \begin{itemize}
-  \item An observation-space attack on MADDPG routing controllers that coordinates
-        its perturbation across agents, inspired by SAJA, and divides it across time,
-        inspired by PGD. It is realised as a learned adversary grounded in the
-        State-Adversarial MDP.
+  \item An observation-space attack on MADDPG routing controllers that extends the
+        learned adversary of the State-Adversarial MDP~\cite{zhang2020robust} with
+        coordination of the perturbation across agents, inspired by SAJA, and division
+        of the attack across time, inspired by PGD, together with an explicit threat
+        model of what the attacker must know and control.
   \item A critical-state timing gate that spends a limited attack budget on
         high-leverage moments. It includes a tie-rationing rule that makes the
         realised attack rate match the requested budget, which a plain threshold
         cannot do because the critical-state score concentrates on a few repeated
         values.
-  \item A coordinated multi-agent formulation of the perturbation, motivated by
-        showing that any attack that treats agents independently optimises a
-        separable objective and cannot express convergence onto a shared link.
-  \item A paired evaluation protocol with a random control, which separates the
-        damage attributable to the attacker from that of any same-sized perturbation,
-        and which reports decisions changed separately from delivery lost.
-  \item An empirical study across seven victim architectures and two domain
-        constraints. Under the FGSM study's constraint, the independent attack
-        substantially damages the local-critic victim with a simple value head, which
-        the independent attack under the stricter constraint could not harm. Under the
-        stricter
-        constraint, the duelling value head is instead the most vulnerable choice,
-        and concentrating the budget on critical states buys more damage per attacked
-        step than attacking at every step, while neither finding holds under the FGSM
-        study's constraint. Against one victim the trained adversary even improves
-        delivery, so a learned adversary's failure to harm a victim is weak evidence
-        of robustness. Under both constraints, the fraction of decisions an attack
-        changes does not predict the damage it does. Coordination, evaluated under the
-        stricter constraint, significantly increases the damage done to local-critic
-        victims without GNN encoding, while its effect on central-critic victims is
-        mixed.
+  \item An evaluation of the learned adversary against a paired random control that
+        shares its admissible set and timing gate, which separates the damage
+        attributable to the attacker's choice of perturbation from that of a random
+        perturbation within the same set, and which reports decisions changed
+        separately from delivery lost.
+  \item An empirical study across seven victim architectures, both attack scopes and
+        two domain constraints, which finds that the architectural choice that appears
+        vulnerable depends on the constraint and the scope.
+  \item A paired comparison with the FGSM baseline on identical episodes and within
+        the FGSM study's admissible set, measured against its own random control.
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -176,14 +174,19 @@ The main contributions of this thesis are:
 
 The remainder of this document is organised as follows.
 Chapter~\ref{cha:literature_review} reviews the relevant literature: deep reinforcement
-learning and its application to routing, MADDPG, adversarial attacks on reinforcement
-learning agents including the State-Adversarial MDP, SAJA, FGSM and PGD, and graph
-neural networks together with the attacks that target them.
-Chapter~\ref{cha:methodology} describes the routing system and the FGSM baseline
-inherited from earlier work, the victim architectures under test, the attack with its
-SAJA-inspired coordination and PGD-inspired timing mechanisms, the learned adversary
-that realises it, and the evaluation
-protocol. Chapter~\ref{chap:results} presents the results under the FGSM study's domain
+learning and its application to routing, MADDPG, graph neural networks and their use in
+routing, and adversarial attacks on reinforcement learning agents, from FGSM and PGD to
+learned State-Adversarial MDP adversaries, strategically-timed attacks and SAJA, and it
+closes by identifying the gap this thesis addresses.
+Chapter~\ref{cha:methodology} sets out the research approach and experimental design,
+the routing system and FGSM baseline inherited from earlier work, the victim
+architectures under test, the attack with its SAJA-inspired coordination and
+PGD-inspired timing mechanisms and the learned adversary that realises it, and then how
+the data were collected and analysed, how the validity of the results was protected,
+and the delimitations of the study. Chapter~\ref{chap:results} presents the results under the FGSM study's domain
 constraint and under the stricter one, reporting the independent and coordinated
-scopes, the effect of coordination and the effect of the constraint itself.
-Chapter~5 concludes and outlines directions for future work.
+scopes, the comparison with the FGSM baseline, the effect of coordination and the effect
+of the constraint itself.
+Chapter~\ref{cha:conclusions} concludes, discusses the limitations of the results and
+outlines directions for future work. Appendix~\ref{app:triggers} gives the heatmaps of
+why the timing gate fired.
