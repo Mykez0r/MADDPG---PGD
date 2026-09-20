@@ -14,12 +14,12 @@
 This chapter describes how the research question of Section~\ref{sec:intro_problem} was
 investigated. That question asks whether the apparent robustness of MADDPG routing
 controllers to FGSM survives a theoretically stronger observation-space attack, one that
-coordinates its perturbation across agents and divides it across time. It is broken down
-into four questions: whether dividing the attack across time buys more damage per
+coordinates its perturbation across agents and divides it strategically across time. It
+is broken down
+into three questions: whether dividing the attack across time buys more damage per
 attacked step (RQ1), whether coordinating the perturbation across agents increases the
-damage (RQ2), which architectural choices of the victim determine its vulnerability
-(RQ3), and whether the fraction of routing decisions an attack changes is a meaningful
-measure of the damage it does (RQ4).
+damage (RQ2), and which architectural choices of the victim determine its vulnerability
+(RQ3).
 
 The chapter moves from the broadest methodological decisions to the most concrete
 procedures. Section~\ref{sec:research_design} sets out the research approach and the
@@ -47,7 +47,7 @@ routing decisions and attack timing.
 
 It is conducted as a controlled experiment in simulation, for three reasons. First, the
 victims exist as policies trained in the simulator of the earlier
-work~\cite{amaral2021maddpg-routing}, and the FGSM baseline was measured in the same
+work~\cite{amaral2026maddpg-routing}, and the FGSM baseline was measured in the same
 simulator, so a like-for-like comparison with that baseline requires the same
 environment. Second, a simulator can replay exactly the same traffic under different
 attacks. Attacks can then be compared episode by episode rather than through averages
@@ -92,7 +92,8 @@ it, the measure used, and where the result is reported.
 \begin{table}[htbp]
   \centering
   \small
-  \caption{Research questions and the comparisons that answer them. The measures are
+  \caption{Research questions and the comparisons that answer them; the last two rows
+           are supplementary comparisons reported alongside them. The measures are
            defined in Section~\ref{sec:data_analysis}.}
   \label{tab:rq_design}
   \begin{tabular}{>{\raggedright\arraybackslash}p{1.6cm}
@@ -118,7 +119,7 @@ it, the measure used, and where the result is reported.
     RQ3     & The seven victim variants against one another
             & $\Delta^{\text{adv}}$ by variant
             & Chapter~\ref{chap:results} \\
-    RQ4     & Routing decisions changed against delivery lost
+    ---     & Routing decisions changed against delivery lost
             & Flip rate, Eq.~\eqref{eq:flip_rate}, against $\Delta^{\text{adv}}$
             & Sections~\ref{subsec:results_parity_flips}
               and~\ref{subsec:results_ind_flips} \\
@@ -141,7 +142,7 @@ states which components are inherited and which are contributed here.
 \label{subsec:base_system}
 
 The victim is a multi-agent routing controller developed in earlier work within the
-same research line~\cite{amaral2021maddpg-routing}. It applies Multi-Agent Deep
+same research line~\cite{amaral2026maddpg-routing}. It applies Multi-Agent Deep
 Deterministic Policy Gradient (MADDPG) to adaptive packet routing under the
 paradigm of centralised training with decentralised execution
 (CTDE)~\cite{lowe2017multi}: each agent $i$ holds an actor $\pi_{\theta_i}$ that
@@ -172,10 +173,7 @@ variant family of Section~\ref{sec:victim_architectures}.
 
 This thesis does not modify the routing controller. The trained agents are treated
 as a fixed system under test: their parameters are frozen, and the attacks interact with
-them only through their observations and actions. The FGSM baseline additionally
-differentiates the agents' actors with respect to their inputs; the learned adversary of
-this thesis never does.
-
+them only through their observations and actions.
 \subsection{The FGSM baseline}
 \label{subsec:base_fgsm}
 
@@ -183,13 +181,14 @@ The second stage established the adversarial setting. A single-step attack based
 the Fast Gradient Sign Method
 (FGSM)~\cite{goodfellow2015explainingharnessingadversarialexamples} was developed
 against these agents in a preceding dissertation in the same line of
-work~\cite{TODO-colleague-fgsm}. It is a gradient-based attack, implemented
+work~\cite{martins2026fgsm}. It is a gradient-based attack, implemented
 independently of the learned adversary of this thesis. Applied to the routing
 controller, the victim is each agent's trained actor and the input is that agent's local
 observation. The objective weights the actor's score for every candidate path by a
-sigmoid of that path's bottleneck utilisation, read from the observation, so that
-ascending it steers the policy towards congested paths rather than inducing a
-misclassification. For the GNN variants the gradient is taken through the encoder, with
+smooth, steeply rising function of that path's bottleneck utilisation, read from the
+observation, which is close to one for congested paths and close to zero for uncongested
+ones, so that ascending it steers the policy towards congested paths rather than
+inducing a misclassification. For the GNN variants the gradient is taken through the encoder, with
 the other agents' observations set to zero. The perturbation is applied to every agent
 at every time step. The threat model it fixed is \emph{observation-space} rather than
 actuation-space: the adversary corrupts what the agents perceive, modelling a
@@ -198,7 +197,10 @@ according to its true state.
 
 That stage contributed not only an attack but an evaluation protocol: the stressed
 traffic regime, the frozen-victim assumption, a random control, and the metrics by
-which an attack is judged. This thesis retains all four.
+which an attack is judged. This thesis keeps the traffic regime, the frozen-victim
+assumption and the metrics unchanged. It also keeps a random control as an arm, but
+draws its perturbation differently, uniformly from the $\varepsilon$-ball rather than at
+$\pm\varepsilon$ with a random sign (Section~\ref{subsec:procedure_evaluation}).
 
 \subsection{The learned-adversary scaffold}
 \label{subsec:base_learned_adversary}
@@ -209,7 +211,7 @@ State-Adversarial MDP of Zhang et al.~\cite{zhang2020robust}
 (Section~\ref{subsec:sa_mdp}). It trains a network against the frozen victim to perturb
 the agents' observations, learning from the damage its perturbations cause, and plugs
 into the same evaluation loop as the FGSM baseline. This work uses it as the vehicle for
-its two mechanisms: the SAJA-inspired coordination and the PGD-inspired timing described
+its two mechanisms: the SAJA-inspired coordination and the timing described
 in Section~\ref{subsec:pgd_maddpg} were built into it, together with the random control
 used to score it.
 
@@ -227,7 +229,9 @@ mechanism to the implementation of Section~\ref{subsec:base_learned_adversary}
 that score it. Such an adversary is theoretically stronger than FGSM
 (Section~\ref{subsec:learned_adversary}), so if it does no more damage than the
 baseline, the result strengthens the case that the controller is robust rather than
-that the baseline was too weak.
+that the baseline was too weak. How much weight that argument can carry depends on the
+size of the effects measured against the variation the experiment cannot control, a
+question Section~\ref{subsec:limitations_statistics} returns to.
 
 Because the purpose is comparison rather than a new attack in isolation,
 compatibility with the earlier stage is a design constraint rather than a
@@ -245,7 +249,7 @@ the FGSM study (Section~\ref{subsec:threat_model_pgd}).
 \label{sec:victim_architectures}
 
 The attacks are evaluated against the family of trained variants inherited from the
-base system~\cite{amaral2021maddpg-routing} rather than against a single model, so
+base system~\cite{amaral2026maddpg-routing} rather than against a single model, so
 that conclusions about the routing task can be separated from conclusions about one
 particular network design, which is what RQ3 requires. The trained weights of every
 variant are used as they were delivered by the earlier work, which is also what makes
@@ -377,11 +381,14 @@ observation, and judged by their combined effect on the network, as SAJA judges 
 perturbations through the value of the joint action they
 induce~\cite{guo2025sajastateactionjointattack}. Several compromised agents can then be
 steered towards the same shared link.
-\item \textbf{(B) Strategically-timed, critical-state attack, inspired by PGD:} the attack
-is divided across time, as PGD divides its budget into smaller
-steps~\cite{madry2019deeplearningmodelsresistant}. A budget limits how often the
-adversary may act, and a critical-state score decides when it does, so that the attack
-is spent at the moments when the network's redundancy is thinnest.
+\item \textbf{(B) Strategically-timed, critical-state attack, inspired by PGD and by Lin
+et al.:} the attack is divided across time, as PGD divides its budget into smaller
+steps~\cite{madry2019deeplearningmodelsresistant}, and is spent at chosen moments, as the
+strategically-timed attack of Lin et
+al.~\cite{lin2019tacticsadversarialattackdeep} perturbs only the steps at which the
+victim's decision matters most. A budget limits how often the adversary may act, and a
+critical-state score decides when it does, so that the attack is spent at the moments
+when the network's redundancy is thinnest.
 \end{itemize}
 
 \noindent The threat model is set out first, since it defines what the attacker is
@@ -523,8 +530,8 @@ than a matter of attack strength: a separable objective cannot express a prefere
 for outcomes that depend on \emph{which} agents are steered onto the \emph{same}
 resource, because the value of steering agent $i$ onto a link is independent of
 whether agent $j$ was steered onto it as well. In a topology whose robustness comes
-from $K$-path redundancy, the damaging configurations are precisely those in which
-several redirected flows converge on one shared link, and these lie outside the
+from $K$-path redundancy, the configurations expected to do most damage are those in
+which several redirected flows converge on one shared link, and these lie outside the
 reach of Equation~\eqref{eq:separable_objective}.
 
 \subsubsection*{Joint perturbation}
@@ -551,8 +558,48 @@ queued destination. Learning its own critic keeps the attack independent of the 
 internals and makes it applicable to the local-critic variants, which have no joint
 critic to use. Because the actor's input and the critic's evaluation are joint, and the
 reward is the damage to the whole network, the adversary is not restricted to separable
-objectives of the form of Equation~\eqref{eq:separable_objective}. How it is trained is
-described in Section~\ref{subsec:learned_adversary}.
+objectives of the form of Equation~\eqref{eq:separable_objective}.
+
+Algorithm~\ref{alg:coordinated_attack} states the mechanism as it is applied at one time
+step. The whole group costs a single actor pass, whose input and output are $N$ times
+longer than in the independent scope. Two details matter for what the adversary can
+learn. First, the direction stored for learning is the \emph{effective} one, recovered
+from the perturbation that survived the projection, so the critic scores what the victim
+actually saw rather than the actor's raw output. Second, the step yields one transition
+for the whole group, carrying the joint observation, the joint direction and the global
+state $\mathbf{g}_t$, whereas the independent scope yields one transition per agent. How
+the adversary is trained from those transitions is described in
+Section~\ref{subsec:learned_adversary}.
+
+\begin{algorithm}[H]
+\SetAlgoLined
+\DontPrintSemicolon
+\KwIn{clean observations $\{s_{i,t}\}_{i \in \mathcal{C}}$ in group order; actor
+      $\nu_\omega$; radius $\varepsilon$; exploration noise $\sigma$ (training only)}
+\KwOut{perturbed observations $\{\hat{s}_{i,t}\}_{i \in \mathcal{C}}$; one joint
+       transition}
+$\mathbf{s}_t \leftarrow \big(s_{1,t}, \dots, s_{N,t}\big)$
+  \tcp*{concatenate the group's observations}
+$a \leftarrow \nu_\omega(\mathbf{s}_t)$ \tcp*{one actor pass for the whole group}
+\lIf{training}{$a \leftarrow \operatorname{clip}\big(a + \xi,\, -1,\, 1\big)$,
+  \quad $\xi \sim \mathcal{N}(0, \sigma^2 I)$}
+$\hat{\mathbf{s}}_t \leftarrow \Pi_{\mathcal{S}}\big(\mathbf{s}_t + \varepsilon\, a\big)$
+  \tcp*{projected per agent block}
+$\tilde{a} \leftarrow \big(\hat{\mathbf{s}}_t - \mathbf{s}_t\big) / \varepsilon$
+  \tcp*{effective joint direction}
+\lForEach{$i \in \mathcal{C}$}{$\hat{s}_{i,t} \leftarrow$ block $i$ of
+  $\hat{\mathbf{s}}_t$}
+the victim acts on $\{\hat{s}_{i,t}\}$; the network steps from the true state\;
+\If{training}{
+  $\mathbf{g}_t \leftarrow$ available bandwidth of every link and each agent's most
+  common queued destination\;
+  store the single transition
+  $\big(\mathbf{s}_t,\, \tilde{a},\, r_t,\, \mathbf{s}_{t+1},\, \mathbf{g}_t,\,
+  \mathbf{g}_{t+1}\big)$ in $\mathcal{R}$\;
+}
+\caption{Coordinated joint perturbation at one time step}
+\label{alg:coordinated_attack}
+\end{algorithm}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \subsection{(B) Strategically-timed attacks under an \texorpdfstring{$L_0$}{L0} budget}
@@ -562,8 +609,11 @@ Without a budget the adversary acts at every time step. A more realistic adversa
 constrained in \emph{how often} it can act, which converts the attack into a
 resource-allocation problem over the trajectory.
 
-Dividing the attack in this way is how the design carries PGD's central idea from the
-input into time. FGSM spends its entire budget in a single step of size
+The mechanism draws on two sources. Dividing the attack in this way is how the design
+carries PGD's central idea from the input into time, and spending the resulting budget at
+deliberately chosen moments rather than arbitrary ones is the idea of the
+strategically-timed attack of Lin et al.~\cite{lin2019tacticsadversarialattackdeep}.
+FGSM spends its entire budget in a single step of size
 $\varepsilon$, and the FGSM baseline did so at every time step for every agent. PGD
 instead divides its budget into a sequence of smaller steps of size
 $\alpha$~\cite{madry2019deeplearningmodelsresistant}. By analogy, rather than applying a
@@ -581,12 +631,12 @@ of $T$ consecutive decisions and for a budget fraction $b \in (0,1]$,
 \noindent The budget applies to the cumulative attack rate over a whole training or
 evaluation run, which spans many episodes, not to each episode separately.
 
-Limiting how often an attack acts was first studied by Lin et
+Limiting how often an attack acts, and choosing when to act, was first studied by Lin et
 al.~\cite{lin2019tacticsadversarialattackdeep}, whose strategically-timed attack minimises
 an agent's expected return subject to a cap of this kind on the number of perturbed
 steps, and from whom the name of this mechanism is taken
-(Section~\ref{subsec:lit_timed_attacks}). The timing mechanism of this thesis shares
-that idea but differs from their attack in three respects. First, its critical-state
+(Section~\ref{subsec:lit_timed_attacks}). The timing mechanism of this thesis takes that
+idea but differs from their attack in three respects. First, its critical-state
 score is read from the network, as the utilisation of its links, rather than from the
 victim's policy, whose preference between its most and least favoured actions Lin et al.
 compare with a threshold. Second, its threshold is recalibrated online as a quantile and
@@ -736,7 +786,8 @@ output layer. The observation presented to the victim is
 \end{equation}
 so that every perturbation lies in the admissible set by construction. In the
 coordinated scope the same construction is applied to the joint observation, as in
-Equation~\eqref{eq:joint_attack}. Lemma~1 takes the perturbed state itself as the
+Equation~\eqref{eq:joint_attack} and Algorithm~\ref{alg:coordinated_attack}. Lemma~1
+takes the perturbed state itself as the
 adversary's action; parameterising it instead as a bounded direction scaled by
 $\varepsilon$ is an equivalent reparameterisation that keeps the actor's output within
 the admissible ball without a penalty term. The victim acts on $\hat{s}_{i,t}$, while the
@@ -782,6 +833,19 @@ while the actor ascends the critic's estimate of the damage its perturbation cau
   \max_{\omega} \; \mathbb{E}_{\mathcal{R}}\Big[ Q^{\nu}_{\psi}\big(s, \nu_\omega(s)\big) \Big].
   \label{eq:la_actor_objective}
 \end{equation}
+
+In the coordinated scope the same two updates are used, on the joint transitions of
+Algorithm~\ref{alg:coordinated_attack} and with the critic additionally conditioned on
+the global state: $Q^{\nu}_{\psi}(\mathbf{s}, \tilde{a}, \mathbf{g})$ replaces
+$Q^{\nu}_{\psi}(s, \tilde{a}^{\nu})$ in Equations~\eqref{eq:la_critic_loss}
+and~\eqref{eq:la_actor_objective}, and the bootstrap term uses
+$\mathbf{g}_{t+1}$, the global state after the environment has stepped. Only the critic
+sees $\mathbf{g}$: the actor conditions on the joint observation alone, so at attack time
+the adversary still needs nothing but the compromised agents' observations
+(Table~\ref{tab:threat_knowledge}). This is where coordination enters training. The actor
+is trained through a value function that scores a joint perturbation against the state of
+the whole network, which is what allows it to prefer perturbations whose damage comes
+from several agents being steered onto the same link.
 
 The episode is treated as a continuing task, so the target in
 Equation~\eqref{eq:la_critic_loss} is never truncated at the episode boundary. During
@@ -843,11 +907,14 @@ share the network-wide reward $r_t$. Each perturbation is therefore still chosen
 agent's view alone, as in the separable problem of
 Equation~\eqref{eq:separable_attack}, but the shared reward trains the actor towards
 perturbations that degrade the network as a whole. In the \emph{coordinated} scope of
-Section~\ref{subsec:coordinated_attack}, the observations of all compromised agents
-are concatenated into one joint input. A single actor then emits one joint
-perturbation, and the critic is additionally conditioned on the available bandwidth of
-every link together with each agent's most common queued destination. This yields one
-transition per step for the whole group.
+Section~\ref{subsec:coordinated_attack}, the per-agent loop of
+Algorithm~\ref{alg:learned_adversary} is replaced by
+Algorithm~\ref{alg:coordinated_attack}: the observations of all compromised agents are
+concatenated into one joint input, a single actor emits one joint perturbation, and the
+critic is additionally conditioned on the global state. Everything else in the training
+loop is unchanged, including the reward, the timing gate and the update schedule. The
+scope therefore changes what one transition contains and how many of them a step
+produces: one joint transition for the whole group, rather than one per agent.
 
 The timing gate of Section~\ref{subsec:timed_attack} is applied during training as well
 as evaluation. On a step it skips, the victim receives clean observations and no
@@ -872,7 +939,8 @@ timing. A trained adversary only approximates that optimum, since it is limited 
 training, which is why the comparison of Section~\ref{sec:results_fgsm_comparison} is
 needed. If the theoretically stronger attacker does no more damage than FGSM, the
 result supports the robustness of the controller rather than the weakness of the
-baseline.
+baseline, provided the damage both attacks do is measured well enough to tell them
+apart (Section~\ref{subsec:limitations_statistics}).
 
 It also requires strictly \emph{less} knowledge of the victim, as set out in
 Section~\ref{subsec:threat_model_pgd}: FGSM differentiates the victim with respect to its
@@ -1019,7 +1087,8 @@ the steps a timing gate skipped, on which no decision changes. The two are repor
 separately because they can diverge. In a topology with $K$-path redundancy, a high flip
 rate accompanied by an unchanged PDR indicates that the network absorbed the redirected
 flows rather than that the attack succeeded, and reporting a flip rate as though it were
-a measure of damage would conflate the two. Whether they diverge in practice is RQ4.
+a measure of damage would conflate the two. How far they diverge in practice is reported
+alongside the gaps in Chapter~\ref{chap:results}.
 
 The \emph{timing} of an attack is described by its realised attack rate, the fraction of
 gate decisions on which it attacked, $F_T / D_T$, and by the composition of its triggers,
@@ -1178,9 +1247,9 @@ not as the raw drop from the clean arm and not as decisions changed, which are r
 separately. One gap remains between what the adversary optimises and what it is scored
 on: its reward is the per-hop drop fraction of Equation~\eqref{eq:la_reward}, while it
 is scored on end-to-end PDR. A significantly negative adversarial gap is therefore read
-as a failure of the trained adversary or of its objective, not as evidence of
-robustness. Similarly, the claim that the learned adversary is theoretically stronger
-than FGSM concerns the optimal adversary; the trained adversaries only approximate it,
+as a failure of the trained adversary or of its objective. Similarly, the claim that the
+learned adversary is theoretically stronger than FGSM concerns the optimal adversary;
+the trained adversaries only approximate it,
 which is why the claim is tested empirically in the comparison with FGSM.
 
 \subsection{Reliability}
@@ -1200,7 +1269,7 @@ training runs. This is the most important limitation of the study, and
 Section~\ref{subsec:limitations_statistics} discusses its consequences.
 
 % ─────────────────────────────────────────────────────────────────────────────
-\section{Limitations}
+\section{Delimitations and Limitations}
 \label{sec:delimitations}
 
 The scope of the study was deliberately delimited in the following respects:
@@ -1213,8 +1282,8 @@ The scope of the study was deliberately delimited in the following respects:
   \item A single perturbation radius, $\varepsilon = 0.30$, is used, and all fourteen
         agents are compromised. The budget of the attack is varied in time rather than
         in size, and partial compromise is not studied.
-  \item Four timing budgets between $0.10$ and $0.25$ are evaluated, together with no
-        budget, and every adversary is trained at $b = 0.25$ only.
+  \item Four timing budgets between $0.10$ and $0.25$ are evaluated, together with the
+        ungated condition, and every adversary is trained at $b = 0.25$ only.
   \item Seven of the eight combinations of the victim axes are evaluated.
   \item The coordination and timing mechanisms are realised with a learned adversary.
         Optimisation-based PGD and SAJA attacks are not implemented, and are left for
@@ -1235,7 +1304,8 @@ Section~\ref{sec:limitations}.
 
 The research question is answered by a controlled, paired experiment in the simulator
 in which the victims were trained and the FGSM baseline was measured. A learned SA-MDP
-adversary, extended with SAJA-inspired coordination and PGD-inspired timing, is trained
+adversary, extended with SAJA-inspired coordination and timing inspired by PGD and by
+Lin et al., is trained
 against each frozen victim and scored against a random control drawn from the same
 admissible set and gated in the same way, so the damage attributed to it is damage its
 learned perturbation caused. Keeping the FGSM study's threat model, traffic and evaluation

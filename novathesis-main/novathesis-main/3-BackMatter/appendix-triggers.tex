@@ -3,7 +3,7 @@
 %% appendix-triggers.tex
 %% NOVA thesis document file
 %%
-%% Appendix: heatmaps of why the timing gate fired (FGSM-parity runs)
+%% Appendix: why the timing gate fired (FGSM-parity runs), in detail
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \typeout{NT FILE appendix-triggers.tex}%
@@ -11,9 +11,21 @@
 \chapter{Timing Gate Triggers}
 \label{app:triggers}
 
-This appendix gives the heatmaps of why the timing gate fired in the FGSM-parity
-evaluations. They are discussed in Sections~\ref{subsec:results_parity_triggers}
-and~\ref{subsec:results_parity_coord}.
+This appendix gives the full trigger breakdown of the FGSM-parity evaluations, whose
+conclusions are stated in Sections~\ref{subsec:results_parity_triggers}
+and~\ref{subsec:results_parity_coord}. These runs are the first in which the timing gate
+recorded why it acted (Section~\ref{subsec:procedure_records}). For every attacked step
+it logs which case of Equation~\eqref{eq:timing_rule} admitted the step, a score
+strictly above the threshold or a tie at the threshold admitted by rationing, together
+with the congestion band the score fell in: saturated ($c_t \ge 1.00$), near saturation
+($0.90 \le c_t < 1.00$), high congestion ($0.75 \le c_t < 0.90$) or moderate
+($c_t < 0.75$). Figures~\ref{fig:trigger_reasons_parity}
+and~\ref{fig:trigger_reasons_coordinated_parity} give each trigger's share of the attack
+arm's attacked steps in the two scopes. Ungated runs have no gate and are omitted.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Independent scope}
+\label{app:triggers_independent}
 
 \begin{figure}[htbp]
   \centering
@@ -29,6 +41,35 @@ and~\ref{subsec:results_parity_coord}.
   \label{fig:trigger_reasons_parity}
 \end{figure}
 
+No attacked step in any run, in either arm, scored $1.00$ or more, or less than $0.75$.
+At $b = 0.10$ and $b = 0.15$ the mean threshold at which the gate fired is $0.90$ for
+every variant, and the tied steps are the steps sitting on the point mass at that value.
+Its stored value falls a floating-point rounding error below $0.90$, which is why ties
+are recorded in the high-congestion band although they sit at that band's upper edge.
+
+Steps scoring between $0.90$ and $1.00$ are admitted at every budget, in a nearly
+constant number per variant: $321$ for \texttt{CC-Simple} and between $505$ and $599$
+for the others. Their share of the attacks therefore falls from $42$--$77\%$ at
+$b = 0.10$ to $17$--$32\%$ at $b = 0.25$.
+
+The route by which the rest of the budget is spent changes with the budget. At
+$b = 0.10$ and $b = 0.15$ the threshold sits on the point mass, and ties admitted by
+rationing account for $23$--$58\%$ and $45$--$66\%$ of the attacks respectively. On the
+observed score sequences, admitting every tie would have raised the attack rate to
+between $17\%$ and $21\%$ at both budgets. From $b = 0.20$ the threshold begins to fall
+below the point mass, and by $b = 0.25$ it lies between $0.82$ and $0.90$. The steps on
+the point mass then pass as strictly above the threshold, and above-threshold steps in
+the high-congestion band, the point mass among them, make up $57$--$77\%$ of the attacks
+at $b = 0.25$, while ties fall to $6$--$11\%$.
+
+The random control passes through the same gate, and its trigger composition is nearly
+identical: at $b = 0.15$, for instance, its tie share differs from the attack arm's by
+at most three percentage points for every variant.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Coordinated scope}
+\label{app:triggers_coordinated}
+
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{trigger_reasons_coordinated_parity.png}
@@ -37,3 +78,15 @@ and~\ref{subsec:results_parity_coord}.
            and cell contents as in Figure~\ref{fig:trigger_reasons_parity}.}
   \label{fig:trigger_reasons_coordinated_parity}
 \end{figure}
+
+The picture is the same when the perturbation is coordinated. No attacked step scored
+$1.00$ or more, or less than $0.75$. Steps scoring between $0.90$ and $1.00$ fire in a
+nearly constant number per variant at every budget, so their share of the attacks falls
+from $42$--$78\%$ at $b = 0.10$ to $17$--$32\%$ at $b = 0.25$. Ties admitted by
+rationing make up $22$--$58\%$ of the attacks at $b = 0.10$ and $44$--$66\%$ at
+$b = 0.15$; admitting every tie would have raised the attack rate to between $17.5\%$
+and $21.3\%$ at both budgets. At $b = 0.25$ the threshold lies between $0.82$ and
+$0.90$, above-threshold steps in the high-congestion band make up $58$--$77\%$ of the
+attacks, and ties only $3$--$11\%$. Every one of these figures is within a few
+percentage points of its counterpart in the independent scope, which is what the gate's
+score being a function of link utilisation alone implies.

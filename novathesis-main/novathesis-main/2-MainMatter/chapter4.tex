@@ -19,7 +19,9 @@ perturbing every agent at every step altered a substantial fraction of routing
 decisions while recovering only a small part of the degradation achievable in
 principle. The present work asks whether that robustness survives a theoretically
 stronger attacker, the learned adversary, with two mechanisms. Inspired by
-PGD, it divides its effort across time: rather than spending a full-strength
+PGD and by the strategically-timed attack of Lin et
+al.~\cite{lin2019tacticsadversarialattackdeep}, it divides its effort across time:
+rather than spending a full-strength
 perturbation at every step, it acts on only a fraction of the steps, choosing
 \emph{when} to spend a limited budget. Inspired by SAJA, it coordinates the perturbation
 across agents, choosing the compromised agents' perturbations together rather than one
@@ -47,8 +49,9 @@ step. The second is the relationship between decisions changed and packets lost,
 tests whether the flip rate reported by the earlier study is a meaningful proxy for
 damage at all. The third is the effect of coordination, measured as the paired
 difference between the coordinated and independent attacks. The FGSM-parity runs also
-record why the timing gate fired, and the chapter closes with the comparison against
-FGSM and the effect of the domain clamp.
+record why the timing gate fired. Section~\ref{sec:results_fgsm_comparison} then
+compares the attack with the FGSM baseline, and the chapter closes with the effect of
+the domain clamp.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Reported Statistic and Experimental Protocol}
@@ -228,41 +231,22 @@ the network absorbs the change.
 \subsection{Independent scope: what triggered the attacks}
 \label{subsec:results_parity_triggers}
 
-The FGSM-parity runs are the first in which the timing gate recorded why it acted. For every
-attacked step it logs which case of Equation~\eqref{eq:timing_rule} admitted the step,
-a score strictly above the threshold or a tie at the threshold admitted by rationing,
-together with the congestion band the score fell in: saturated ($c_t \ge 1.00$), near
-saturation ($0.90 \le c_t < 1.00$), high congestion ($0.75 \le c_t < 0.90$) or
-moderate ($c_t < 0.75$). Figure~\ref{fig:trigger_reasons_parity}, in
-Appendix~\ref{app:triggers}, shows each trigger's share of the attack arm's attacked
-steps. The random control passes through the same gate, and its composition is nearly
-identical: at $b = 0.15$, for instance, its tie share differs from the attack arm's by
-at most three percentage points for every variant.
+The FGSM-parity runs are the first in which the timing gate recorded why it acted,
+logging for every attacked step which case of Equation~\eqref{eq:timing_rule} admitted
+it and how congested the network was at the time. Appendix~\ref{app:triggers} gives the
+full breakdown; three findings matter here.
 
-Three findings stand out. First, no attacked step in any run, in either arm, scored
-$1.00$ or more, or less than $0.75$. The point mass in the score distribution that the
-rationing rule of Section~\ref{subsec:timed_attack} exists to handle lies at $0.90$
-rather than at full saturation. At $b = 0.10$ and $b = 0.15$ the mean threshold at
-which the gate fired is $0.90$ for every variant, and the tied steps are the steps
-sitting on that point mass. Its stored value falls a floating-point rounding error below
-$0.90$, which is why ties are recorded in the high-congestion band although they sit at
-that band's upper edge.
-
-Second, the most congested states always fire. Steps scoring between $0.90$ and $1.00$
-are admitted at every budget, in a nearly constant number per variant: $321$ for
-\texttt{CC-Simple} and between $505$ and $599$ for the others. Their share of the
-attacks therefore falls from $42$--$77\%$ at $b = 0.10$ to $17$--$32\%$ at $b = 0.25$.
-
-Third, the route by which the rest of the budget is spent changes with the budget. At
-$b = 0.10$ and $b = 0.15$ the threshold sits on the point mass, and ties admitted by
-rationing account for $23$--$58\%$ and $45$--$66\%$ of the attacks respectively. On the
-observed score sequences, admitting every tie would have raised the attack rate to
-between $17\%$ and $21\%$ at both budgets, collapsing the two tightest budgets into
-nearly the same experiment; rationing is what keeps them apart. From $b = 0.20$ the
-threshold begins to fall below the point mass, and by $b = 0.25$ it lies between $0.82$
-and $0.90$. The steps on the point mass then pass as strictly above the threshold, and
-above-threshold steps in the high-congestion band, the point mass among them, make up
-$57$--$77\%$ of the attacks at $b = 0.25$, while ties fall to $6$--$11\%$.
+First, the gate spends the budget on congested states only. No attacked step in any run,
+in either arm, scored less than $0.75$, and none reached full saturation at $1.00$. The
+point mass in the score distribution that the rationing rule of
+Section~\ref{subsec:timed_attack} exists to handle therefore lies at $0.90$, not at
+saturation. Second, the most congested states always fire: steps scoring between $0.90$
+and $1.00$ are admitted at every budget in a nearly constant number, so their share of
+the attacks falls from $42$--$77\%$ at $b = 0.10$ to $17$--$32\%$ at $b = 0.25$ as the
+budget admits less congested states as well. Third, the rationing rule is what keeps the
+two tightest budgets apart: on the observed score sequences, admitting every tie at the
+threshold would have raised the attack rate to between $17\%$ and $21\%$ at both
+$b = 0.10$ and $b = 0.15$, collapsing them into nearly the same experiment.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \subsection{Coordinated scope}
@@ -325,19 +309,11 @@ $2.7$~pp ungated. The decisions changed again fail to predict the damage: ungate
 \texttt{LC-Simple} change between $13.0\%$ and $14.9\%$ of routing decisions, yet their
 gaps range from $+0.27$ to $+2.74$~pp.
 
-The timing gate behaves as it does in the independent scope
-(Figure~\ref{fig:trigger_reasons_coordinated_parity}, in Appendix~\ref{app:triggers}).
-No attacked step scored $1.00$ or more, or less than $0.75$. Steps scoring between
-$0.90$ and $1.00$ fire in a nearly constant number per variant at every budget, so their
-share of the attacks falls from $42$--$78\%$ at $b = 0.10$ to $17$--$32\%$ at
-$b = 0.25$. Ties admitted by rationing make up $22$--$58\%$ of the attacks at
-$b = 0.10$ and $44$--$66\%$ at $b = 0.15$; admitting every tie would have raised the
-attack rate to between $17.5\%$ and $21.3\%$ at both budgets. At $b = 0.25$ the
-threshold lies between $0.82$ and $0.90$, above-threshold steps in the high-congestion
-band make up $58$--$77\%$ of the attacks, and ties only $3$--$11\%$. The gate's score
-depends only on link utilisation, and the close match with
-Figure~\ref{fig:trigger_reasons_parity} indicates that the composition of the triggers
-is set by the network and the budget rather than by how the perturbation is chosen.
+The timing gate fires on the same states as in the independent scope, and every share
+reported above is matched here to within a few percentage points
+(Appendix~\ref{app:triggers_coordinated}). Its score depends only on link utilisation,
+so the composition of the triggers is set by the network and the budget rather than by
+how the perturbation is chosen.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \subsection{Effect of coordination}
@@ -541,15 +517,19 @@ variants against which FGSM itself separates from its random control. Apart from
 one case, its advantage appears only per attacked step, on individual variants, and
 does not carry through to more total damage than the single-step baseline.
 
-This outcome bears directly on the robustness of the controller. The learned adversary
+This outcome bears on the robustness of the controller. The learned adversary
 is theoretically the stronger attacker (Section~\ref{subsec:learned_adversary}): it
 searches over perturbation policies that include FGSM's, and it can additionally
 coordinate across agents and choose when to act. That such an attacker, trained against
-the victim, ends up doing about as much damage as a single gradient step supports the
-reading that the controller is robust to observation-space attacks of this size, rather
-than the reading that the FGSM baseline was simply too weak to find its vulnerabilities.
-As with every result in this chapter, the conclusion concerns the adversaries that were
-trained, not a bound on the damage an optimal attack could do.
+the victim, ends up doing about as much damage as a single gradient step favours the
+reading that the controller is robust to observation-space attacks of this size over the
+reading that the FGSM baseline was simply too weak to find its vulnerabilities. It does
+not settle the question. The differences involved are of the order of a percentage point
+or two on a delivery ratio of about $77\%$, comparable to what a perturbation of the same
+size moves with no adversarial direction, and every one of them rests on a single trained
+adversary per configuration; Section~\ref{subsec:limitations_statistics} sets out what
+that leaves unresolved. As with every result in this chapter, the conclusion concerns the
+adversaries that were trained, not a bound on the damage an optimal attack could do.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Results Under the Full Domain Clamp}

@@ -8,14 +8,38 @@
 
 \typeout{NT FILE abstract-en.tex}%
 
-Multi-agent deep deterministic policy gradient (MADDPG) with Graphical Neural Networks (GNN) is a powerful coordination learning system for Deep Reinforcement Learning (DRL) agents that has the potential to solve critical decision-making problems in packet routing while improving overall network performance. In recent studies, the importance of integrating DRL, MADDPG, and GNN algorithms in network routing systems for addressing current problems is evident. However, the security implications and study of vulnerabilities and consequences in this area are still relatively unknown. It is of interest to study how these vulnerabilities can be exploited and their consequences understood so that adequate defenses can be developed.
-
-Known attack algorithms are implemented, adapted for the network context, against the most common architectures of MADDPG and GNN separately and then a joint GNN-MADDPG implementation to see the effect on their performance.
+Routing controllers trained with Multi-Agent Deep Deterministic Policy Gradient
+(MADDPG), often combined with graph neural networks, decide where to send traffic from
+the telemetry each agent perceives, and that telemetry is something an attacker may be
+able to corrupt. This dissertation asks whether the apparent robustness such a
+controller showed against the Fast Gradient Sign Method (FGSM) survives an attacker that
+is stronger in principle. It cannot be taken for granted: the earlier attack perturbed
+each agent in isolation and at every time step, so its limited effect on packet delivery
+cannot distinguish a genuinely robust controller from an attack too weak to expose it.
+The attack built here is the learned observation adversary of the State-Adversarial
+Markov Decision Process, extended with two mechanisms, namely perturbations chosen
+jointly for all compromised agents, as SAJA suggests, and divided across time under a
+budget spent at the moments when the network's redundancy is thinnest, as PGD and
+strategically-timed attacks suggest. Twenty-eight adversaries, one for each combination
+of victim variant, attack scope and domain constraint, were trained against seven frozen
+MADDPG variants and evaluated on 30 paired episodes against an unperturbed arm and a
+random control drawn from the same admissible set, at four timing budgets and without
+one, and were compared with FGSM on the 15 episodes the two studies share. The learned
+adversary did more damage than the baseline in only one of the 70 comparable
+configurations, and coordination and the timing budget each changed which victims
+were harmed. The effects measured are small, however, mostly of the same order as the
+movement that a perturbation of this size produces with no adversarial direction at all,
+and each configuration was trained once, so the differences between configurations
+cannot be separated from the variation between training runs. The evidence therefore
+supports the weaker claim that no attack in this family did substantial damage to these
+controllers, rather than establishing that they are robust, and it leaves open how much
+of the variation observed is attributable to the adversary rather than to noise.
 
 % Abstract keywords
 \keywords{
-  MADDPG \and
-  GNN \and
-  Security \and
-  Networks
+  Reinforcement Learning \and
+  Multi-Agent Deep Deterministic Policy Gradient  \and
+  Network Security \and
+  Graph Neural Networks \and
+  Adversarial attacks
 }

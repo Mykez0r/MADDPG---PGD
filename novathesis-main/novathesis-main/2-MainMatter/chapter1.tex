@@ -63,12 +63,12 @@ remains largely unexplored.
 \label{sec:intro_problem}
 
 This thesis continues a line of research on a MADDPG routing controller developed in
-earlier work~\cite{amaral2021maddpg-routing}. A preceding dissertation in the same line
+earlier work~\cite{amaral2026maddpg-routing}. A preceding dissertation in the same line
 attacked that controller with FGSM, perturbing each agent's observation in a single
-gradient step at every time step~\cite{TODO-colleague-fgsm}. The attack altered a
+gradient step at every time step~\cite{martins2026fgsm}. The attack altered a
 substantial fraction of the routing decisions taken by the victim, yet recovered only
-a small part of the degradation achievable in principle, because the redundancy of the
-topology absorbed the redirected traffic.
+a small part of the degradation achievable in principle; the redundancy of the topology
+appears to have absorbed the redirected traffic.
 
 That result admits two readings. Either the controller is genuinely robust, or a
 single-step, per-agent adversary is too weak for its failure to count as evidence of
@@ -80,10 +80,10 @@ research question is therefore:
 \begin{quote}
 \emph{Does the apparent robustness of MADDPG routing controllers to FGSM survive a
 theoretically stronger observation-space attack, one that coordinates its perturbation
-across agents and divides it across time?}
+across agents and divides it strategically across time?}
 \end{quote}
 
-\noindent It is broken down into four questions:
+\noindent It is broken down into three questions:
 \begin{enumerate}
   \item[\textbf{RQ1}] Does dividing the attack across time, spending a limited budget
         on the network's most critical states, buy more damage per attacked step than
@@ -93,8 +93,6 @@ across agents and divides it across time?}
   \item[\textbf{RQ3}] Which architectural choices of the victim, namely its critic
         domain, its value head and the use of GNN encoding, determine how vulnerable
         it is?
-  \item[\textbf{RQ4}] Is the fraction of routing decisions an attack changes a
-        meaningful measure of the damage it does?
 \end{enumerate}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -103,11 +101,14 @@ across agents and divides it across time?}
 
 The attack addresses the two weaknesses of the baseline in turn, drawing on a different
 source of inspiration for each. Where FGSM spends its whole perturbation budget in a
-single step, PGD divides it into a sequence of smaller projected
-steps~\cite{madry2019deeplearningmodelsresistant}. The attack carries this principle
-from the input into time: instead of applying a full-strength perturbation at every
-step, it acts on only a fraction of the steps, chosen by a critical-state score that
-identifies the moments at which the network's redundancy is thinnest. Where the
+single step, PGD divides it into a sequence of smaller
+steps~\cite{madry2019deeplearningmodelsresistant}, and the strategically-timed attack of
+Lin et al.~\cite{lin2019tacticsadversarialattackdeep} perturbs only a limited number of
+steps, chosen by how much the victim's decision matters at each of them. Taking both as
+inspiration, the attack carries the idea of dividing the budget from the input into
+time: instead of applying a full-strength perturbation at every step, it acts on only a
+fraction of the steps, chosen by a critical-state score that identifies the moments at
+which the network's redundancy is thinnest. Where the
 baseline perturbs each agent in isolation, SAJA~\cite{guo2025sajastateactionjointattack}
 judges the perturbations of several victim agents together, by the centralised critic's
 value of the joint action they induce. Inspired by it, the attack coordinates its
@@ -149,7 +150,9 @@ The main contributions of this thesis are:
   \item An observation-space attack on MADDPG routing controllers that extends the
         learned adversary of the State-Adversarial MDP~\cite{zhang2020robust} with
         coordination of the perturbation across agents, inspired by SAJA, and division
-        of the attack across time, inspired by PGD, together with an explicit threat
+        of the attack across time, inspired by PGD and by the strategically-timed
+        attack of Lin et al.~\cite{lin2019tacticsadversarialattackdeep}, together with
+        an explicit threat
         model of what the attacker must know and control.
   \item A critical-state timing gate that spends a limited attack budget on
         high-leverage moments. It includes a tie-rationing rule that makes the
@@ -181,7 +184,8 @@ closes by identifying the gap this thesis addresses.
 Chapter~\ref{cha:methodology} sets out the research approach and experimental design,
 the routing system and FGSM baseline inherited from earlier work, the victim
 architectures under test, the attack with its SAJA-inspired coordination and
-PGD-inspired timing mechanisms and the learned adversary that realises it, and then how
+timing mechanism inspired by PGD and by Lin et al., the learned adversary that realises
+it, and then how
 the data were collected and analysed, how the validity of the results was protected,
 and the delimitations of the study. Chapter~\ref{chap:results} presents the results under the FGSM study's domain
 constraint and under the stricter one, reporting the independent and coordinated

@@ -324,10 +324,13 @@ observe that networks trained against FGSM overfit to the narrow set of examples
 produces and show no robustness against PGD, and conclude that robustness must be
 judged against a strong multi-step attacker rather than a single-step
 one~\cite{madry2019deeplearningmodelsresistant}. A single-step attack that fails
-therefore says little about the model's robustness. PGD is the inspiration for the timing
-mechanism of this thesis (Section~\ref{subsec:timed_attack}): where FGSM spends its budget
-in one step and PGD divides it into several, the attack divides its effort across time,
-while every attacked step remains bounded by the full $\varepsilon$.
+therefore says little about the model's robustness. PGD is one of the two inspirations
+for the timing mechanism of this thesis (Section~\ref{subsec:timed_attack}), the other
+being the strategically-timed attack of
+Lin et al.~\cite{lin2019tacticsadversarialattackdeep} reviewed in
+Section~\ref{subsec:lit_timed_attacks}: where FGSM spends its budget in one step and PGD
+divides it into several, the attack divides its effort across time, while every attacked
+step remains bounded by the full $\varepsilon$.
 
 Both methods were, however, designed for classifiers, where one perturbation targets one
 prediction, and they carry three limitations into reinforcement learning. They are
@@ -393,9 +396,9 @@ perturbation~\cite{zhang2020robust}.
 Zhang et al.\ build on Lemma~1 in \textbf{Alternating Training with Learned
 Adversaries (ATLA)}~\cite{zhang2021robust}, which trains an adversary against a fixed
 agent by policy gradient, then trains the agent against that adversary, and alternates.
-The learned adversary proves considerably stronger than the per-step attacks before it,
-lowering the victim's reward well below critic-based, MAD, Robust Sarsa and snooping
-attacks, and it can drive an agent in the opposite direction of its goal rather than
+In their experiments the learned adversary is considerably stronger than the per-step
+attacks before it, lowering the victim's reward well below critic-based, MAD, Robust
+Sarsa and snooping attacks, and it can drive an agent in the opposite direction of its goal rather than
 merely halting it. Its weakness is cost: the adversary's action space is the full
 observation space, which becomes hard to learn as the observation grows.
 \textbf{PA-AD}~\cite{sun2021strongest} addresses this by splitting the adversary into a
@@ -596,9 +599,10 @@ This leaves a gap. No work reviewed here evaluates observation-space attacks aga
 multi-agent routing controller, a setting whose path redundancy may absorb redirected
 traffic and in which many agents act in parallel. The only such evaluation in this
 research line applied FGSM, a single-step, per-agent attack, and found that it did
-little damage~\cite{TODO-colleague-fgsm}; by the argument of Madry et al., that failure
+little damage~\cite{martins2026fgsm}; by the argument of Madry et al., that failure
 is weak evidence of robustness. Whether the controller withstands an attacker that is
 stronger in principle, a learned SA-MDP adversary that coordinates its perturbation
-across agents, as SAJA suggests, and divides its effort across time, as PGD and
-strategically-timed attacks suggest, has not been tested. This thesis addresses that
+across agents, as SAJA suggests, and divides its effort across time, as PGD and the
+strategically-timed attack of Lin et al.~\cite{lin2019tacticsadversarialattackdeep}
+suggest, has not been tested. This thesis addresses that
 question, through the research questions set out in Section~\ref{sec:intro_problem}.

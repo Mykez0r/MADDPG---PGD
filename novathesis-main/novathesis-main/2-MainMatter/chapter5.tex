@@ -13,12 +13,17 @@
 
 This thesis asked whether the apparent robustness of MADDPG routing controllers to FGSM
 survives an observation-space attack that coordinates its perturbation across agents,
-inspired by SAJA, and divides it across time, inspired by PGD. The attack was realised
+inspired by SAJA, and divides it across time, inspired by PGD and by the
+strategically-timed attack of Lin et al.~\cite{lin2019tacticsadversarialattackdeep}. The
+attack was realised
 as a learned adversary, trained against the frozen victim and evaluated against seven
 victim architectures in paired episodes with a random control. This chapter draws the
-conclusions of that evaluation on three questions, namely how effective the attack is
-compared with the FGSM baseline, what coordination adds over the independent attack,
-and what the timing budget achieves compared with attacking every step. It then sets out
+conclusions of that evaluation on the four questions of
+Section~\ref{sec:intro_problem}: how effective the attack is compared with the FGSM
+baseline, which is the central question; what coordination adds over the independent
+attack (RQ2); what the timing budget achieves compared with attacking every step (RQ1);
+and which architectural choices of the victim determine how vulnerable it is (RQ3). It
+then sets out
 the limitations of those conclusions, above all their statistical relevance, and
 outlines the work that would strengthen or extend them.
 
@@ -33,9 +38,9 @@ The comparison with FGSM is only meaningful under the FGSM study's own admissibl
 and it was made on the 15 episodes that the two evaluations share
 (Section~\ref{sec:results_fgsm_comparison}).
 
-The learned attack did not do more total damage than FGSM. It exceeded the
-baseline significantly in a single configuration, the independent attack on every step
-against \texttt{LC-Simple}, by $2.21$~pp. With the timing budget in place, the
+The learned attack did more total damage than FGSM in one configuration only, the
+independent attack on every step against \texttt{LC-Simple}, by $2.21$~pp; everywhere
+else it matched the baseline or fell short of it. With the timing budget in place, the
 independent attack did significantly less damage than FGSM on four variants at every
 budget, which is partly by construction, since it acted on only $10$ to $25\%$ of the
 steps while FGSM acted on all of them. Coordination brought the attack closer to FGSM
@@ -48,16 +53,31 @@ coordinated scope at $b = 0.25$, it caused more damage per step attacked than FG
 without causing more damage in total.
 
 The victim family withstands the learned
-adversary about as well as it withstands the single-step baseline. The learned adversary
+adversary at least as well as it withstands the single-step baseline. The learned adversary
 is theoretically the stronger attacker: its policy class includes FGSM's per-step rule,
 and it can additionally coordinate across agents and choose when to act. That it does no
-more damage than FGSM therefore supports the robustness of the controller, rather than
-suggesting that the FGSM baseline was too weak to reveal its vulnerabilities. This conclusion
-concerns the trained adversaries that were evaluated, not the best attack that is
-possible. A learned adversary is only as strong as its training, and one of them
-steered \texttt{LC-Duelling} to deliver more packets than it did unattacked
-(Section~\ref{subsec:results_parity_timing}), which shows that a trained adversary can
-fail to find a damaging perturbation where one exists.
+more damage than FGSM is consistent with a robust controller, and it is the reading this
+thesis favours over the alternative, that the FGSM baseline was simply too weak. It does
+not, however, establish robustness, for two reasons that run through the evaluation.
+
+The first is the size of the effects. Against a clean delivery ratio of about $77\%$, no
+gated gap in any configuration reaches $1.5$~pp, which is the same order as the movement
+that a perturbation of this size produces with no adversarial direction at all: on
+\texttt{LC-Simple} the random control delivered $0.4$~pp \emph{more} than the clean arm,
+and on \texttt{LC-Duelling} the trained adversary delivered $1.7$~pp more than the clean
+arm (Section~\ref{subsec:results_parity_timing}). The second is that each configuration
+was trained once and without a seed, so the confidence intervals of
+Chapter~\ref{chap:results} cover the variation between evaluation episodes but not the
+variation between training runs (Section~\ref{subsec:limitations_statistics}). An effect
+that clears the first hurdle but not the second says little about the controller.
+
+What the evaluation establishes is therefore the weaker statement that no attack in this
+family, as trained here, did substantial damage to these controllers. How much of the
+variation it reports is the adversary's doing rather than noise, and whether controllers
+of this kind are robust in general, remain open. A learned adversary is also only as
+strong as its training, and one of them steered \texttt{LC-Duelling} to deliver more
+packets than it did unattacked (Section~\ref{subsec:results_parity_timing}), which shows
+that a trained adversary can fail to find a damaging perturbation where one exists.
 
 \subsection{Coordination compared with the independent attack}
 \label{subsec:conclusions_coordination}
@@ -69,7 +89,8 @@ It increased the damage done to \texttt{LC-Duelling} at every budget, by $0.64$ 
 $1.58$~pp, turning a victim the independent adversary had helped into one the attack
 harms, and to \texttt{CC-Duelling} from $b = 0.15$ onwards, by up to $2.16$~pp. It
 reduced the damage done to \texttt{LC-Simple} at every budget, by $0.48$ to $3.99$~pp,
-on the variant the independent attack had harmed most. Under the stricter full clamp the
+on the variant the independent attack had harmed most. Under the stricter full domain
+constraint, the full clamp of Chapter~\ref{chap:results}, the
 pattern was different again: coordination made \texttt{LC-Simple} attackable and
 reduced the damage done to \texttt{CC-Duelling-GNN}
 (Section~\ref{subsec:results_coordination_effect}).
@@ -81,6 +102,14 @@ others. No single property of the victim explains which: the local-critic accoun
 fits the full-clamp results does not fit the FGSM-parity ones. What coordination
 contributes depends on the pair of trained adversaries being compared as much as on the
 victim, and its gains do not come from changing more routing decisions.
+
+That last point should be pressed further. Every coordination effect reported here is a
+difference between two separately trained adversaries, and almost all of them are
+smaller than $1.5$~pp. Since neither adversary's training was repeated, the spread
+between training runs is unknown and cannot be subtracted from these differences
+(Section~\ref{subsec:limitations_statistics}). The direction of the effect on a given
+victim is therefore not established; what the evaluation does show is that coordination
+is not a uniform improvement, and that no configuration of it produced a large gap.
 
 \subsection{Timing budget compared with attacking every step}
 \label{subsec:conclusions_timing}
@@ -94,8 +123,8 @@ the two tightest budgets would both have attacked between $17\%$ and $21\%$ of s
 In the FGSM-parity runs, where the reasons were recorded, the attacks fired only when the
 most utilised link was at least $75\%$ utilised, and at the two tightest budgets almost
 entirely at $90\%$ or more. The composition of the
-triggers was the same in both scopes, so it is set by the network and the budget rather
-than by the perturbation.
+triggers matched to within a few percentage points in both scopes, so it is set by the
+network and the budget rather than by the perturbation.
 
 Spending a limited budget on those moments did not buy more total damage than
 attacking every step. For almost every victim the attack harmed, the ungated attack did
@@ -105,23 +134,52 @@ attacking every step, by a factor of up to $2.6$ on \texttt{CC-Duelling-GNN} und
 full clamp and of about $1.3$ on \texttt{CC-Duelling} in the coordinated scope under
 the FGSM study's admissible set. It was not higher for the independent attack under that
 admissible set, where \texttt{LC-Simple}'s damage grew in proportion to the number of
-steps attacked. The PGD-inspired idea of dividing the attack across time therefore
+steps attacked. The idea taken from PGD and from Lin et al., of dividing the attack
+across time and spending it at chosen moments, therefore
 makes each attacked step count for more in most settings, but not reliably, and it does
-not make the attack more damaging overall. A limitation of the ungated comparison is
-that every adversary was trained with the gate at $b = 0.25$, so when attacking every
-step it acted on states it had not encountered during training.
+not make the attack more damaging overall. These efficiency figures divide one small
+quantity by another, a gap of at most a few percentage points by an attack rate of a
+tenth to a quarter, and carry no confidence interval, so they are indications rather
+than measurements, and the factors quoted above should not be read as precise. A further
+limitation of the ungated comparison is that every adversary was trained with the gate at
+$b = 0.25$, so when attacking every step it acted on states it had not encountered during
+training.
+
+\subsection{Architectural choices and vulnerability}
+\label{subsec:conclusions_architecture}
+
+No architectural axis of the victim family is vulnerable across the board. Which choice
+appears to be the weak one changes with the admissible set and with the attack scope.
+Under the FGSM study's set, the independent attack harmed \texttt{LC-Simple} at every
+budget and \texttt{CC-Duelling-GNN} only when attacking every step, while the
+coordinated attack harmed \texttt{CC-Duelling} most
+(Sections~\ref{subsec:results_parity_timing} and~\ref{subsec:results_parity_coord}).
+Under the full clamp the pattern moved again: the independent attack harmed the duelling
+variants, led by \texttt{CC-Duelling-GNN} and \texttt{LC-Duelling}, and the coordinated
+attack harmed the two local-critic variants without GNN encoding
+(Sections~\ref{subsec:results_ind_timing} and~\ref{subsec:results_coord}). Each of the
+three axes therefore appears decisive in some setting and irrelevant in another, so none
+of them can be named as the vulnerability of the controller, and a defence chosen on the
+evidence of one setting would be chosen on the wrong evidence. The caution of
+Section~\ref{subsec:conclusions_fgsm} applies here with particular force: these are
+comparisons between separately trained adversaries at gaps of one or two percentage
+points, so the pattern may reflect which adversaries happened to train well as much as
+any property of the architectures.
+
+Two results do hold throughout. \texttt{CC-Simple-GNN} and \texttt{LC-Duelling-GNN} were
+not harmed by any attack in any setting, for different reasons: the first barely changes
+its routing under perturbation at all, whereas the second changes it and delivers the
+packets regardless (Section~\ref{subsec:results_ind_flips}). GNN encoding is not
+protective in itself, however, since the third GNN variant,
+\texttt{CC-Duelling-GNN}, suffered the largest gap of the full-clamp independent attack.
 
 \subsection{Further observations}
 \label{subsec:conclusions_other}
 
-Three further results hold across the evaluation. The fraction of routing decisions an
+One further result holds across the evaluation. The fraction of routing decisions an
 attack changes does not predict the damage it does: attacks that changed nearly the same
 fraction of decisions produced gaps several percentage points apart, so flip rates should
-not be reported as attack success. Which architectural choice appears vulnerable depends
-on the admissible set and the attack scope, so no single design can be named as the weak
-point of the controller. And two of the three GNN-encoded victims,
-\texttt{CC-Simple-GNN} and \texttt{LC-Duelling-GNN}, were not harmed by any attack in any
-setting.
+not be reported as attack success.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Limitations}
@@ -152,6 +210,24 @@ each clamp, and the comparison with FGSM. The comparisons across timing budgets 
 exposed, since every budget, and the ungated run, evaluates the same trained adversary
 under a different gate.
 
+The size of the effects compounds this. Almost everything reported in
+Chapter~\ref{chap:results} is a difference of one or two percentage points on a clean
+delivery ratio of about $77\%$: no gated adversarial gap reaches $1.5$~pp, and the
+coordination and clamp effects are of the same order. Perturbation alone, with no
+adversarial direction, moves delivery by a comparable amount and in either direction,
+which is why the random control is the reference rather than the clean arm. A paired
+interval can resolve differences this small between two arms on the same episodes, and
+the intervals reported are valid in that narrow sense, but resolving a difference is not
+the same as attributing it: with one training run per configuration, a gap of this size
+is as consistent with the idiosyncrasy of a single trained adversary as with a property
+of the victim it was trained against. The derived quantities are more exposed still,
+since the damage per attacked step divides one small quantity by another. The safe
+reading of Chapter~\ref{chap:results} is that every gated attack left delivery within
+about a percentage point of where a random perturbation of the same size left it, that
+only the ungated attacks opened a wider margin, at most the $5.90$~pp on
+\texttt{LC-Simple}, and that the differences \emph{between} configurations are not
+established.
+
 Two more statistical caveats apply. All evaluations use a single traffic seed, and
 therefore the same 30 episodes, so the variation between traffic patterns is sampled only
 by those episodes. And the chapter reports well over a hundred confidence intervals, each
@@ -167,7 +243,8 @@ rather than on individual cells.
 The evaluation covers a single topology, a single stressed traffic regime, one
 perturbation budget of $\varepsilon = 0.30$ with
 every agent compromised. The critical-state score was motivated partly by the thinning of
-redundancy after link failures. Each adversary was
+redundancy after link failures, yet no failures were injected in any evaluation, so that
+part of its motivation is untested. Each adversary was
 trained with the timing gate at $b = 0.25$ only, so the tighter budgets act on a subset of
 its training states, and the ungated evaluation asks it to act on states it never
 encountered. The reasons why the timing gate fired were recorded only for the FGSM-parity
@@ -199,12 +276,16 @@ The limitation of Section~\ref{subsec:limitations_statistics} can be addressed d
 The evaluation should be repeated with several independently trained adversaries per
 configuration, each trained from a different random seed, so that the spread between
 training runs can be measured and a result can be attributed to the attack rather than
-to one run.
+to one run. That spread is what the present evaluation lacks, and measuring it is what
+would show whether the differences of one or two percentage points reported here stand
+above it at all.
 
 \subsection{Optimisation-based PGD and SAJA attacks}
 \label{subsec:future_optimisation}
 
-This thesis took PGD and SAJA as inspiration, but realised both mechanisms through a
+This thesis took PGD, the strategically-timed attack of Lin et
+al.~\cite{lin2019tacticsadversarialattackdeep} and SAJA as inspiration, but realised
+both mechanisms through a
 learned adversary rather than by solving an optimisation problem at each step. A natural
 next step is to implement the attacks in their original form, as gradient optimisation
 problems, and to evaluate them under the same protocol. A PGD

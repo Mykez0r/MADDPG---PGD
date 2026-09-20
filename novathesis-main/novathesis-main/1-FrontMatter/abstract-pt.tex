@@ -8,25 +8,40 @@
 
 \typeout{NT FILE abstract-pt.tex}%
 
-Multi-agent deep deterministic policy gradient (MADDPG) com Graphical Neural Networks (GNN) é um sistema de aprendizagem de coordenação poderoso para agentes de Deep Reinforcement Learning (DRL) que tem o potencial de resolver problemas de decisão críticos em encaminhamento de pacotes melhorando performance global. Em estudos recentes é evidente a importância a integração de algoritmos DRL, MADDPG e GNN em sistemas de encaminhamento em redes para resolução de problemas presentes, no entanto as implicações de segurança e estudo de vulnerabilidades e consequências nesta área ainda são relati-vamente desconhecidas. É de interesse estudar como é que essas vulnerabilidades podem ser exploradas e as suas consequências para que se possa construir defesas adequadas.
-
-É implementado algoritmos de ataque conhecidos, adaptado para contexto de redes, contra as arquiteturas mais comuns de MADDPG e GNN em separado e depois uma implementação conjunta GNN-MADDPG para que se possa ver o efeito na sua performance.
-
-
-% E agora vamos fazer um teste com uma quebra de linha no hífen a ver se a \LaTeX\ duplica o hífen na linha seguinte se usarmos \verb+"-+… em vez de \verb+-+.
-%
-% zzzz zzz zzzz zzz zzzz zzz zzzz zzz zzzz zzz zzzz zzz zzzz zzz zzzz zzz zzzz comentar"-lhe zzz zzzz zzz zzzz
-%
-% Sim!  Funciona! :)
+Os controladores de encaminhamento treinados com Multi-Agent Deep Deterministic Policy
+Gradient (MADDPG), muitas vezes combinados com redes neuronais em grafo, decidem para
+onde enviar o tráfego a partir da telemetria que cada agente percebe, e essa telemetria
+é algo que um atacante poderá conseguir corromper. Esta dissertação pergunta se a
+aparente robustez que um destes controladores demonstrou perante o Fast Gradient Sign
+Method (FGSM) resiste a um atacante mais forte em teoria. Tal não pode ser assumido:
+o ataque anterior perturbava cada agente isoladamente e em todos os instantes, pelo que
+o seu efeito limitado na entrega de pacotes não permite distinguir um controlador
+genuinamente robusto de um ataque demasiado fraco para o expor. O ataque aqui construído
+é o adversário aprendido do Processo de Decisão de Markov com Estados Adversariais,
+estendido com dois mecanismos: perturbações escolhidas conjuntamente para todos os
+agentes comprometidos, como sugere o SAJA, e divididas ao longo do tempo sob um
+orçamento gasto nos momentos em que a redundância da rede é menor, como sugerem o PGD e
+os ataques estrategicamente temporizados. Foram treinados vinte e oito adversários, um
+para cada combinação de variante da vítima, âmbito do ataque e restrição de domínio,
+contra sete variantes MADDPG congeladas, e avaliados em 30 episódios emparelhados contra
+um braço sem perturbação e um controlo aleatório extraído do mesmo conjunto admissível,
+com quatro orçamentos temporais e sem orçamento, tendo ainda sido comparados com o FGSM
+nos 15 episódios comuns aos dois estudos. O adversário aprendido causou mais danos do
+que a linha de base em apenas uma das 70 configurações comparáveis, e tanto a
+coordenação como o orçamento temporal alteraram quais as vítimas afetadas. Os efeitos
+medidos são, contudo, pequenos, na sua maioria da mesma ordem de grandeza da variação
+que uma perturbação desta dimensão produz sem qualquer direção adversarial, e cada
+configuração foi treinada uma única vez, pelo que as diferenças entre configurações não
+podem ser separadas da variação entre treinos. A evidência sustenta, por isso, a
+afirmação mais fraca de que nenhum ataque desta família causou danos substanciais a
+estes controladores, e não que estes sejam robustos, deixando em aberto que parte da
+variação observada é atribuível ao adversário e não ao ruído.
 
 % Palavras-chave do resumo em Português
-% \begin{keywords}
-% Palavra-chave 1, Palavra-chave 2, Palavra-chave 3, Palavra-chave 4
-% \end{keywords}
 \keywords{
-  MADDPG \and
-  GNN \and
-  Segurança \and
-  Redes
+  Aprendizagem por Reforço \and
+  Multi-Agent Deep Deterministic Policy Gradient \and
+  Segurança de Redes \and
+  Redes Neuronais em Grafo \and
+  Ataques Adversariais
 }
-% to add an extra black line
