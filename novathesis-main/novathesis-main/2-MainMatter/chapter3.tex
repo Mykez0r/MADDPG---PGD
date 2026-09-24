@@ -305,6 +305,14 @@ constant may be shifted between $V$ and $A$ without changing $Q$. The duelling h
 is thus an extra parallel projection rather than a value--advantage separation, and
 differences it produces should be attributed on that basis.
 
+The consequence matters for Chapter~\ref{chap:results}. Summing two scalar streams gives
+the same set of functions as emitting one scalar directly, so the two heads span the
+same function class and neither can represent a critic the other cannot. What the extra
+parameters change is the trajectory training follows, and therefore the weights the
+critic settles on and the actor it trains. Any difference in vulnerability that tracks
+the value head is consequently a property of the particular solutions these runs
+learned, not of what the head is able to express.
+
 % ─────────────────────────────────────────────────────────────────────────────
 \subsection{With and without GNN encoding}
 \label{subsec:axis_gnn}
@@ -1286,8 +1294,10 @@ The scope of the study was deliberately delimited in the following respects:
         ungated condition, and every adversary is trained at $b = 0.25$ only.
   \item Seven of the eight combinations of the victim axes are evaluated.
   \item The coordination and timing mechanisms are realised with a learned adversary.
-        Optimisation-based PGD and SAJA attacks are not implemented, and are left for
-        future work (Section~\ref{subsec:future_optimisation}).
+        Optimisation-based PGD and SAJA attacks are outside the evaluation reported
+        here; an iterated PGD attack has since been run in the companion
+        study~\cite{martins2026fgsm}, and SAJA remains future work
+        (Section~\ref{subsec:future_optimisation}).
 \end{itemize}
 
 The study is also subject to limitations it could not control within its design. Each

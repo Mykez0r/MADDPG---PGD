@@ -8,7 +8,7 @@
 
 \typeout{NT FILE chapter4.tex}%
 
-\chapter{Statistics and Results}
+\chapter{Results}
 \label{chap:results}
 
 This chapter reports what the learned observation-space adversary of
@@ -136,12 +136,17 @@ interval that spans zero. \texttt{CC-Simple}, \texttt{CC-Simple-GNN} and
 
 \begin{table}[htbp]
   \centering
-  \caption{Independent scope, FGSM-parity domain clamp. Adversarial gap in percentage
+  \caption[Independent scope, FGSM-parity clamp: adversarial gap by timing budget]{%
+           Independent scope, FGSM-parity domain clamp. Adversarial gap in percentage
            points by victim variant and requested timing budget, at
            $\varepsilon = 0.30$ and $n = 30$ paired episodes. Bold entries have a 95\%
            confidence interval excluding zero. Positive values indicate the attack
            cost the victim more than the random control drawn from the same
-           $\varepsilon$-ball; negative values indicate the reverse.}
+           $\varepsilon$-ball; negative values indicate the reverse. The reference is
+           this study's random control, which draws each feature uniformly from that
+           ball, so these gaps are not directly comparable with the FGSM gaps of
+           Table~\ref{tab:fgsm_baseline}, which are measured against a different
+           control.}
   \label{tab:gap_sweep_parity}
   \begin{tabular}{lrrrrr}
     \hline
@@ -200,10 +205,14 @@ and $10.7\%$ on the four variants with the highest flip rates.
 
 \begin{table}[htbp]
   \centering
-  \caption{Independent scope, FGSM-parity domain clamp. Ungated results at
+  \caption[Independent scope, FGSM-parity clamp: ungated gaps and flip rates]{%
+           Independent scope, FGSM-parity domain clamp. Ungated results at
            $\varepsilon = 0.30$, $n = 30$ paired episodes: adversarial gap with its
            95\% confidence interval, and the fraction of routing decisions changed by
-           the attack and by the random control.}
+           the attack and by the random control. The gap is measured against this
+           study's uniform random control, not against the $\pm\varepsilon$ control of
+           the FGSM study, so it is not directly comparable with
+           Table~\ref{tab:fgsm_baseline}.}
   \label{tab:ungated_detail_parity}
   \begin{tabular}{lrcrr}
     \hline
@@ -281,10 +290,14 @@ of zero throughout.
 
 \begin{table}[htbp]
   \centering
-  \caption{Coordinated scope, FGSM-parity domain clamp. Adversarial gap in percentage
+  \caption[Coordinated scope, FGSM-parity clamp: adversarial gap by timing budget]{%
+           Coordinated scope, FGSM-parity domain clamp. Adversarial gap in percentage
            points by victim variant and requested timing budget, at
            $\varepsilon = 0.30$ and $n = 30$ paired episodes. Bold entries have a 95\%
-           confidence interval excluding zero.}
+           confidence interval excluding zero. As in
+           Table~\ref{tab:gap_sweep_parity}, the reference is this study's uniform
+           random control, so these gaps are not directly comparable with the FGSM gaps
+           of Table~\ref{tab:fgsm_baseline}.}
   \label{tab:gap_sweep_coordinated_parity}
   \begin{tabular}{lrrrrr}
     \hline
@@ -397,11 +410,21 @@ episodes, against its own random control. It separates from zero on three varian
 
 \begin{table}[htbp]
   \centering
-  \caption{FGSM baseline under the FGSM-parity domain clamp, $\varepsilon = 0.30$, no
+  \caption[FGSM baseline under the FGSM-parity clamp: adversarial gap and flip rates]{%
+           FGSM baseline under the FGSM-parity domain clamp, $\varepsilon = 0.30$, no
            link failures, $n = 15$ paired episodes: adversarial gap against FGSM's own
            random control, with its 95\% confidence interval, and the fraction of
            routing decisions the attack changed. Bold entries have a confidence interval
-           excluding zero.}
+           excluding zero. That control draws $\pm\varepsilon$ with a random sign for
+           every feature, whereas the control behind
+           Tables~\ref{tab:gap_sweep_parity} to~\ref{tab:gap_sweep_coordinated_parity}
+           draws each feature uniformly from the $\varepsilon$-ball: the two sets of
+           gaps are measured against different references and must not be compared
+           directly. The attacks themselves are compared in
+           Tables~\ref{tab:fgsm_vs_independent} and~\ref{tab:fgsm_vs_coordinated}.
+           These figures are measured on the base trained victim of each
+           architecture; Section~\ref{subsec:limitations_statistics} reports how far
+           they move between training runs of the victim.}
   \label{tab:fgsm_baseline}
   \begin{tabular}{lrcr}
     \hline
@@ -527,8 +550,9 @@ reading that the FGSM baseline was simply too weak to find its vulnerabilities. 
 not settle the question. The differences involved are of the order of a percentage point
 or two on a delivery ratio of about $77\%$, comparable to what a perturbation of the same
 size moves with no adversarial direction, and every one of them rests on a single trained
-adversary per configuration; Section~\ref{subsec:limitations_statistics} sets out what
-that leaves unresolved. As with every result in this chapter, the conclusion concerns the
+adversary per configuration and a single trained victim per architecture;
+Section~\ref{subsec:limitations_statistics} sets out what that leaves unresolved, and
+reports how far the FGSM figures themselves move when the victim is retrained. As with every result in this chapter, the conclusion concerns the
 adversaries that were trained, not a bound on the damage an optimal attack could do.
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -588,13 +612,25 @@ tie rationing described in Section~\ref{subsec:timed_attack} the realised rate c
 fall below the fraction of steps on that point mass, and the two tightest budgets
 collapse into nearly the same experiment.
 
-Table~\ref{tab:gap_sweep_independent} gives the underlying values. The architectural
-pattern is sharp: the duelling value head is the vulnerable axis. All three duelling
+Table~\ref{tab:gap_sweep_independent} gives the underlying values. In this setting the
+damage falls on the variants with a duelling value head. All three duelling
 variants without a local-critic GNN reach a significant gap at full rate, led by
 \texttt{CC-Duelling-GNN} at $+2.81$~pp and \texttt{LC-Duelling} at $+2.27$~pp, while
 every simple-head variant remains at or below $+0.22$~pp. Three variants,
 \texttt{CC-Simple-GNN}, \texttt{LC-Simple} and \texttt{LC-Duelling-GNN}, never
 separate from zero at any budget.
+
+The head itself cannot be the explanation. As Section~\ref{subsec:axis_value_head}
+sets out, the duelling head of these critics sums two scalar streams and therefore spans
+exactly the same function class as the simple head: anything one can express, the other
+can. What differs is the training trajectory, since the extra parameters change the path
+the critic takes and so the weights it settles on, and with them the actor that critic
+trained. A pattern that tracks the duelling head is thus a property of the particular
+solutions these runs happened to learn, not of the head's expressive power. Nor does the
+pattern hold outside this setting: under the coordinated scope of
+Section~\ref{subsec:results_coord} and under the FGSM-parity clamp of
+Section~\ref{sec:results_parity_clamp} the damage falls elsewhere, which
+Section~\ref{subsec:conclusions_architecture} takes up.
 
 \begin{table}[htbp]
   \centering

@@ -67,8 +67,9 @@ earlier work~\cite{amaral2026maddpg-routing}. A preceding dissertation in the sa
 attacked that controller with FGSM, perturbing each agent's observation in a single
 gradient step at every time step~\cite{martins2026fgsm}. The attack altered a
 substantial fraction of the routing decisions taken by the victim, yet recovered only
-a small part of the degradation achievable in principle; the redundancy of the topology
-appears to have absorbed the redirected traffic.
+a small part of the degradation achievable in principle, some $21$ percentage points of
+delivery at this operating point; the redundancy of the topology appears to have
+absorbed the redirected traffic.
 
 That result admits two readings. Either the controller is genuinely robust, or a
 single-step, per-agent adversary is too weak for its failure to count as evidence of
@@ -168,7 +169,8 @@ The main contributions of this thesis are:
         two domain constraints, which finds that the architectural choice that appears
         vulnerable depends on the constraint and the scope.
   \item A paired comparison with the FGSM baseline on identical episodes and within
-        the FGSM study's admissible set, measured against its own random control.
+        the FGSM study's admissible set, differencing the two attacks directly, since
+        the studies' random controls are not the same.
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────

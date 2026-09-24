@@ -56,13 +56,23 @@ The victim family withstands the learned
 adversary at least as well as it withstands the single-step baseline. The learned adversary
 is theoretically the stronger attacker: its policy class includes FGSM's per-step rule,
 and it can additionally coordinate across agents and choose when to act. That it does no
-more damage than FGSM is consistent with a robust controller, and it is the reading this
-thesis favours over the alternative, that the FGSM baseline was simply too weak. It does
+more damage than FGSM anywhere but the one configuration above is consistent with a
+robust controller, and it is the reading this thesis favours over the alternative, that
+the FGSM baseline was simply too weak. That alternative has since been tested on its own
+terms: in the companion study a tuned iterated gradient attack, spending many steps where
+FGSM spends one, also failed to out-damage the single-step baseline on these
+victims~\cite{martins2026fgsm}, so the objection that one step is too few does not hold
+here (Section~\ref{subsec:future_optimisation}). It does
 not, however, establish robustness, for two reasons that run through the evaluation.
 
 The first is the size of the effects. Against a clean delivery ratio of about $77\%$, no
-gated gap in any configuration reaches $1.5$~pp, which is the same order as the movement
-that a perturbation of this size produces with no adversarial direction at all: on
+gated gap in any configuration reaches $1.5$~pp. Measured instead against the damage
+ceiling, the roughly $21$~pp that an ideal observation-space attacker could extract at
+this operating point~\cite{martins2026fgsm}, the largest gap found anywhere in this
+study, the $5.90$~pp of the ungated independent attack on \texttt{LC-Simple}, is under a
+third of what was available, and every gated configuration is under a tenth. The gaps
+are also of the same order as the movement that a perturbation of this size produces
+with no adversarial direction at all: on
 \texttt{LC-Simple} the random control delivered $0.4$~pp \emph{more} than the clean arm,
 and on \texttt{LC-Duelling} the trained adversary delivered $1.7$~pp more than the clean
 arm (Section~\ref{subsec:results_parity_timing}). The second is that each configuration
@@ -160,11 +170,20 @@ attack harmed the two local-critic variants without GNN encoding
 (Sections~\ref{subsec:results_ind_timing} and~\ref{subsec:results_coord}). Each of the
 three axes therefore appears decisive in some setting and irrelevant in another, so none
 of them can be named as the vulnerability of the controller, and a defence chosen on the
-evidence of one setting would be chosen on the wrong evidence. The caution of
+evidence of one setting would be chosen on the wrong evidence. The value head makes the
+point sharply: the duelling and simple heads of these critics span the same function
+class (Section~\ref{subsec:axis_value_head}), so where the duelling variants are the
+ones damaged, as under the full clamp in the independent scope, what is exposed is the
+solution those runs happened to learn and not the architecture that produced it. The
+caution of
 Section~\ref{subsec:conclusions_fgsm} applies here with particular force: these are
 comparisons between separately trained adversaries at gaps of one or two percentage
 points, so the pattern may reflect which adversaries happened to train well as much as
-any property of the architectures.
+any property of the architectures. The same holds of the victims, and there it has been
+measured: repeating the FGSM measurement on three independently trained victims per
+architecture~\cite{martins2026fgsm} leaves no ordering between the four variants without
+GNN encoding intact (Section~\ref{subsec:limitations_statistics}). The architecture a gap is attributed to
+is, in part, the victim that happened to be trained.
 
 Two results do hold throughout. \texttt{CC-Simple-GNN} and \texttt{LC-Duelling-GNN} were
 not harmed by any attack in any setting, for different reasons: the first barely changes
@@ -209,6 +228,45 @@ adversaries, the effect of the domain clamp, which compares adversaries trained 
 each clamp, and the comparison with FGSM. The comparisons across timing budgets are less
 exposed, since every budget, and the ungated run, evaluates the same trained adversary
 under a different gate.
+
+The victims are subject to the same caveat, and on that side it has been measured. The
+companion FGSM study repeated its measurement on three independently trained victims per
+architecture, for the four variants without GNN
+encoding~\cite{martins2026fgsm}, with the results of
+Table~\ref{tab:victim_replication}. Every mean plus or minus one standard deviation
+overlaps every other, and the spread between the variants' means, $1.3$~pp, is smaller
+than the spread between seeds of a single variant, which runs from $0.8$ to $2.4$~pp.
+The ordering of the variants does not survive retraining: \texttt{CC-Simple}, the least
+affected of the four on the base victims, is the most affected under one of the two
+new seeds. Where Chapter~\ref{chap:results} reads a difference between architectures,
+part of what it reads is which victim happened to be trained, which is the failure mode
+Section~\ref{subsec:conclusions_architecture} warns of, here confirmed rather than
+supposed.
+
+\begin{table}[htbp]
+  \centering
+  \caption[FGSM gap across independently trained victims]{FGSM adversarial gap in
+           percentage points on three independently trained victims per architecture,
+           under the FGSM-parity domain clamp at $\varepsilon = 0.30$, $n = 15$ paired
+           episodes, against FGSM's own random control. The \emph{base} column is
+           the victim used throughout Chapter~\ref{chap:results}
+           (Table~\ref{tab:fgsm_baseline}); \emph{s1042} and \emph{s2042} are the same
+           architecture retrained from different seeds. The three variants with GNN
+           encoding are not included. Figures from the companion FGSM
+           study~\cite{martins2026fgsm}.}
+  \label{tab:victim_replication}
+  \begin{tabular}{lrrrrr}
+    \hline
+    \textbf{Variant} & \textbf{base} & \textbf{s1042} & \textbf{s2042}
+                     & \textbf{mean} & \textbf{sd} \\
+    \hline
+    CC-Simple    & $+0.37$ & $+2.70$ & $+5.11$ & $+2.72$ & $2.37$ \\
+    CC-Duelling  & $+2.53$ & $+2.57$ & $+5.81$ & $+3.63$ & $1.88$ \\
+    LC-Simple    & $+3.27$ & $+3.49$ & $+2.00$ & $+2.92$ & $0.81$ \\
+    LC-Duelling  & $+1.24$ & $+1.19$ & $+4.66$ & $+2.36$ & $1.99$ \\
+    \hline
+  \end{tabular}
+\end{table}
 
 The size of the effects compounds this. Almost everything reported in
 Chapter~\ref{chap:results} is a difference of one or two percentage points on a clean
@@ -261,7 +319,20 @@ nearly the full $\varepsilon$, whereas the random control draws each feature's
 perturbation uniformly from $[-\varepsilon, \varepsilon]$. The adversarial gap therefore
 reflects the size of the perturbation as well as its direction, and a random control
 that also perturbs every feature by $\pm\varepsilon$, as the FGSM baseline's did, would
-isolate direction more cleanly. Finally, the threat model assumes that the attacker can
+isolate direction more cleanly.
+
+The direction of that bias is worth stating, because it works against the attack's
+case rather than for it. A control that perturbs every feature by $\pm\varepsilon$ costs
+the victim more than one drawn uniformly from the same ball, so the adversarial gaps
+reported in Chapter~\ref{chap:results} are larger than they would have been against the
+baseline's control. Every positive gap in this thesis is therefore flattered by its own
+reference, and every null result would be at least as null against a stronger one. The
+comparison with FGSM in Section~\ref{sec:results_fgsm_comparison} is not affected, since
+it differences the attack arms directly and never uses either control; taken together,
+the learned adversary is measured generously throughout and still out-damages the
+single-step baseline in one configuration out of seventy.
+
+Finally, the threat model assumes that the attacker can
 train against a faithful simulator of the network and, when the attack is timed, read
 the utilisation of every link while it attacks.
 
@@ -269,33 +340,47 @@ the utilisation of every link while it attacks.
 \section{Future Work}
 \label{sec:future_work}
 
-\subsection{Repeated training for statistical relevance}
+\subsection{Repeated training of the adversaries}
 \label{subsec:future_repetition}
 
-The limitation of Section~\ref{subsec:limitations_statistics} can be addressed directly.
-The evaluation should be repeated with several independently trained adversaries per
-configuration, each trained from a different random seed, so that the spread between
-training runs can be measured and a result can be attributed to the attack rather than
-to one run. That spread is what the present evaluation lacks, and measuring it is what
-would show whether the differences of one or two percentage points reported here stand
-above it at all.
+Half of the limitation of Section~\ref{subsec:limitations_statistics} has already been
+addressed. On the victim side the FGSM measurement was repeated across independently
+trained victims, and the spread it revealed is reported in
+Table~\ref{tab:victim_replication}. The adversary side remains open, and can be
+addressed the same way: the evaluation should be repeated with several independently
+trained adversaries per configuration, each trained from a different random seed, so
+that the spread between training runs can be measured and a result can be attributed to
+the attack rather than to one run. Given what retraining did to the victims, that spread
+is likely to be of the same order as the effects this thesis reports, and measuring it
+is what would show whether the differences of one or two percentage points stand above
+it at all. The replication should also be extended to the three variants with GNN
+encoding, which the victim-side runs did not cover.
 
-\subsection{Optimisation-based PGD and SAJA attacks}
+\subsection{Optimisation-based joint attacks}
 \label{subsec:future_optimisation}
 
 This thesis took PGD, the strategically-timed attack of Lin et
 al.~\cite{lin2019tacticsadversarialattackdeep} and SAJA as inspiration, but realised
-both mechanisms through a
-learned adversary rather than by solving an optimisation problem at each step. A natural
-next step is to implement the attacks in their original form, as gradient optimisation
-problems, and to evaluate them under the same protocol. A PGD
-attack~\cite{madry2019deeplearningmodelsresistant} would solve for each attacked step's
-perturbation by iterated projected gradient ascent on an attack objective, and could be
-combined with the same timing gate. A SAJA-style attack~\cite{guo2025sajastateactionjointattack}
-would perturb all compromised agents' observations jointly by gradient ascent, scoring
-each candidate by the centralised critic's value of the joint action it induces.
+both mechanisms through a learned adversary rather than by solving an optimisation
+problem at each step. Implementing them in their original form, as gradient optimisation
+problems evaluated under the same protocol, was left as the natural next step.
 
-Comparing these attacks with the learned adversary and with FGSM, within the same
+For PGD~\cite{madry2019deeplearningmodelsresistant} that step has since been taken in
+the companion study~\cite{martins2026fgsm}. A tuned iterated attack, with a step-size
+sweep, momentum and random restarts, was run there against all seven victims. Plain iterated ascent spends only $20$ to $68\%$ of its
+$\varepsilon$ budget, because the sign of the gradient oscillates between steps and
+successive steps partly cancel; momentum restores this to $82$ to $90\%$. Even so, no
+iterated configuration beat single-step FGSM, which stayed ahead on five of the seven
+variants. The extra iterations therefore buy nothing here, which points the same way as
+Section~\ref{subsec:conclusions_fgsm}: within this admissible set and against these
+victims, one gradient step already extracts close to what a per-step gradient attack
+can.
+
+What remains is the joint half. A SAJA-style
+attack~\cite{guo2025sajastateactionjointattack} would perturb all compromised agents'
+observations together by gradient ascent, scoring each candidate by the centralised
+critic's value of the joint action it induces. Comparing it with the learned adversary,
+with the iterated attack above and with FGSM, within the same
 admissible set and on the same paired episodes, would show whether learning the
 adversary is beneficial for adversarial attacks on this controller, or whether direct
 optimisation achieves more damage. Such a study would have to address several obstacles.
